@@ -327,8 +327,8 @@ resource "aws_iam_role_policy" "admin_glue_athena" {
     Statement = [
       {
         # Admin can query all tables including bronze_hits_raw (plaintext PII)
-        Effect   = "Allow"
-        Action   = ["glue:GetDatabase", "glue:GetDatabases", "glue:GetTable", "glue:GetTables", "glue:GetPartition", "glue:GetPartitions"]
+        Effect = "Allow"
+        Action = ["glue:GetDatabase", "glue:GetDatabases", "glue:GetTable", "glue:GetTables", "glue:GetPartition", "glue:GetPartitions"]
         Resource = [
           "arn:aws:glue:${var.aws_region}:${data.aws_caller_identity.current.account_id}:catalog",
           "arn:aws:glue:${var.aws_region}:${data.aws_caller_identity.current.account_id}:database/${replace("${var.project_name}_${var.environment}", "-", "_")}",
@@ -396,8 +396,8 @@ resource "aws_iam_role_policy" "developer_s3" {
       },
       {
         # Explicit IAM-level deny on raw PII data (defence-in-depth alongside S3 bucket policy)
-        Effect   = "Deny"
-        Action   = "s3:*"
+        Effect = "Deny"
+        Action = "s3:*"
         Resource = [
           "${aws_s3_bucket.data_lake.arn}/bronze/raw/*",
           "${aws_s3_bucket.data_lake.arn}/landing/*",
@@ -439,8 +439,8 @@ resource "aws_iam_role_policy" "developer_glue_athena" {
         ]
       },
       {
-        Effect = "Allow"
-        Action = ["athena:StartQueryExecution", "athena:GetQueryExecution", "athena:GetQueryResults", "athena:StopQueryExecution", "athena:GetWorkGroup"]
+        Effect   = "Allow"
+        Action   = ["athena:StartQueryExecution", "athena:GetQueryExecution", "athena:GetQueryResults", "athena:StopQueryExecution", "athena:GetWorkGroup"]
         Resource = ["arn:aws:athena:${var.aws_region}:${data.aws_caller_identity.current.account_id}:workgroup/${var.project_name}-${var.environment}"]
       },
     ]
@@ -471,29 +471,15 @@ resource "aws_lambda_function" "analyzer" {
     variables = {
       ENVIRONMENT     = var.environment
       LOG_LEVEL       = "INFO"
-      KMS_KEY_ARN     = aws_kms_key.data_key.arn     # Standard key for masked bronze / gold
-      PII_KMS_KEY_ARN = aws_kms_key.pii_key.arn      # PII key for raw bronze (encrypt only)
+      KMS_KEY_ARN     = aws_kms_key.data_key.arn # Standard key for masked bronze / gold
+      PII_KMS_KEY_ARN = aws_kms_key.pii_key.arn  # PII key for raw bronze (encrypt only)
     }
   }
 }
 
-resource "aws_lambda_permission" "s3_trigger" {
-  statement_id  = "AllowS3Invoke"
-  action        = "lambda:InvokeFunction"
-  function_name = aws_lambda_function.analyzer.function_name
-  principal     = "s3.amazonaws.com"
-  source_arn    = aws_s3_bucket.data_lake.arn
-}
-
-resource "aws_s3_bucket_notification" "landing_trigger" {
-  bucket = aws_s3_bucket.data_lake.id
-  lambda_function {
-    lambda_function_arn = aws_lambda_function.analyzer.arn
-    events              = ["s3:ObjectCreated:*"]
-    filter_prefix       = "landing/"
-  }
-  depends_on = [aws_lambda_permission.s3_trigger]
-}
+# Lambda is now invoked by Step Functions (not directly by S3).
+# EventBridge + Step Functions replaced the raw S3→Lambda trigger — see the
+# orchestration section below for aws_s3_bucket_notification and event rules.
 
 # ---- CloudWatch (monitoring) ----
 
@@ -549,37 +535,51 @@ resource "aws_glue_data_catalog_encryption_settings" "catalog" {
 }
 
 # ---- Glue Catalog (schema registry for Athena) ----
+#
+# Tables are registered here as Apache Iceberg format.
+# Terraform creates the Glue schema entries; the actual Iceberg table metadata
+# (manifest files, snapshots, schema.json) is written by the first INSERT via Athena
+# or the Lambda using the Iceberg SDK. S3 prefix layout:
+#
+#   bronze/masked/        — Iceberg table root (data + metadata subfolders)
+#   bronze/raw/           — Iceberg table root (PII KMS key, admin only)
+#   gold/                 — Iceberg table root
+#
+# Why Iceberg over plain Hive external tables?
+#   - ACID transactions: concurrent Lambda writes don't corrupt the table
+#   - Schema evolution: add columns without re-writing all files
+#   - Time travel: query data as-of a past snapshot (audit, debugging)
+#   - Row-level deletes: GDPR right-to-be-forgotten — delete a visitor's rows
+#     by IP hash without rewriting entire partitions
+#   - Partition pruning on hidden partitions: no manual partition management
 
 resource "aws_glue_catalog_database" "analytics" {
   name = replace("${var.project_name}_${var.environment}", "-", "_")
 }
 
-# Bronze/masked table — pseudonymized hit-level data (ip and user_agent SHA-256 hashed)
-# Developer role has Glue access to this table. PII values are irreversible hashes.
+# Bronze/masked — Iceberg, pseudonymized PII, developer + admin access
 resource "aws_glue_catalog_table" "bronze_hits_masked" {
   name          = "bronze_hits_masked"
   database_name = aws_glue_catalog_database.analytics.name
 
   table_type = "EXTERNAL_TABLE"
+
+  open_table_format_input {
+    iceberg_input {
+      metadata_operation = "CREATE"
+      version            = "2"
+    }
+  }
+
   parameters = {
-    "classification"         = "csv"
-    "skip.header.line.count" = "1"
-    "pii_handling"           = "pseudonymized-sha256"
+    "table_type"        = "ICEBERG"
+    "pii_handling"      = "pseudonymized-sha256"
+    "format"            = "parquet"
+    "write_compression" = "snappy"
   }
 
   storage_descriptor {
-    location      = "s3://${aws_s3_bucket.data_lake.id}/bronze/masked/"
-    input_format  = "org.apache.hadoop.mapred.TextInputFormat"
-    output_format = "org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat"
-
-    ser_de_info {
-      serialization_library = "org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe"
-      parameters = {
-        "field.delim"            = "\t"
-        "serialization.format"   = "\t"
-        "skip.header.line.count" = "1"
-      }
-    }
+    location = "s3://${aws_s3_bucket.data_lake.id}/bronze/masked/"
 
     columns {
       name = "hit_time_gmt"
@@ -590,12 +590,14 @@ resource "aws_glue_catalog_table" "bronze_hits_masked" {
       type = "string"
     }
     columns {
-      name = "user_agent"
-      type = "string"
+      name    = "ip"
+      type    = "string"
+      comment = "PII-pseudonymized: sha256 hash of original IP address"
     }
     columns {
-      name = "ip"
-      type = "string"
+      name    = "user_agent"
+      type    = "string"
+      comment = "PII-pseudonymized: sha256 hash of original user agent string"
     }
     columns {
       name = "event_list"
@@ -629,54 +631,57 @@ resource "aws_glue_catalog_table" "bronze_hits_masked" {
       name = "referrer"
       type = "string"
     }
+    columns {
+      name    = "ingestion_date"
+      type    = "date"
+      comment = "Hidden partition column — date the record was ingested"
+    }
   }
 }
 
-# Bronze/raw table — original hit-level data with plaintext PII
-# Admin role ONLY. Developer role lacks kms:Decrypt on pii_key and has no Glue permission here.
+# Bronze/raw — Iceberg, plaintext PII, admin role ONLY
+# Objects encrypted with pii_key; developer role has no kms:Decrypt on that key.
 resource "aws_glue_catalog_table" "bronze_hits_raw" {
   name          = "bronze_hits_raw"
   database_name = aws_glue_catalog_database.analytics.name
 
   table_type = "EXTERNAL_TABLE"
+
+  open_table_format_input {
+    iceberg_input {
+      metadata_operation = "CREATE"
+      version            = "2"
+    }
+  }
+
   parameters = {
-    "classification"         = "csv"
-    "skip.header.line.count" = "1"
-    "pii_handling"           = "encrypted-at-rest-pii-kms-key"
-    "data_classification"    = "restricted-pii"
+    "table_type"          = "ICEBERG"
+    "data_classification" = "restricted-pii"
+    "pii_handling"        = "plaintext-pii-kms-encrypted"
+    "format"              = "parquet"
+    "write_compression"   = "snappy"
   }
 
   storage_descriptor {
-    location      = "s3://${aws_s3_bucket.data_lake.id}/bronze/raw/"
-    input_format  = "org.apache.hadoop.mapred.TextInputFormat"
-    output_format = "org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat"
-
-    ser_de_info {
-      serialization_library = "org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe"
-      parameters = {
-        "field.delim"            = "\t"
-        "serialization.format"   = "\t"
-        "skip.header.line.count" = "1"
-      }
-    }
+    location = "s3://${aws_s3_bucket.data_lake.id}/bronze/raw/"
 
     columns {
-      name    = "hit_time_gmt"
-      type    = "bigint"
+      name = "hit_time_gmt"
+      type = "bigint"
     }
     columns {
-      name    = "date_time"
-      type    = "string"
-    }
-    columns {
-      name    = "user_agent"
-      type    = "string"
-      comment = "PII: quasi-identifier — plaintext in raw layer, admin access only"
+      name = "date_time"
+      type = "string"
     }
     columns {
       name    = "ip"
       type    = "string"
-      comment = "PII: direct visitor identifier — plaintext in raw layer, admin access only"
+      comment = "PII: plaintext visitor IP — admin access only via pii_key KMS"
+    }
+    columns {
+      name    = "user_agent"
+      type    = "string"
+      comment = "PII: plaintext user agent — admin access only via pii_key KMS"
     }
     columns {
       name = "event_list"
@@ -710,33 +715,36 @@ resource "aws_glue_catalog_table" "bronze_hits_raw" {
       name = "referrer"
       type = "string"
     }
+    columns {
+      name    = "ingestion_date"
+      type    = "date"
+      comment = "Hidden partition column — date the record was ingested"
+    }
   }
 }
 
-# Gold table — aggregated keyword performance output
+# Gold — Iceberg, no PII, developer + admin access
 resource "aws_glue_catalog_table" "gold_keyword_performance" {
   name          = "gold_keyword_performance"
   database_name = aws_glue_catalog_database.analytics.name
 
   table_type = "EXTERNAL_TABLE"
+
+  open_table_format_input {
+    iceberg_input {
+      metadata_operation = "CREATE"
+      version            = "2"
+    }
+  }
+
   parameters = {
-    "classification"         = "csv"
-    "skip.header.line.count" = "1"
+    "table_type"        = "ICEBERG"
+    "format"            = "parquet"
+    "write_compression" = "snappy"
   }
 
   storage_descriptor {
-    location      = "s3://${aws_s3_bucket.data_lake.id}/gold/"
-    input_format  = "org.apache.hadoop.mapred.TextInputFormat"
-    output_format = "org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat"
-
-    ser_de_info {
-      serialization_library = "org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe"
-      parameters = {
-        "field.delim"            = "\t"
-        "serialization.format"   = "\t"
-        "skip.header.line.count" = "1"
-      }
-    }
+    location = "s3://${aws_s3_bucket.data_lake.id}/gold/"
 
     columns {
       name = "search_engine_domain"
@@ -751,6 +759,152 @@ resource "aws_glue_catalog_table" "gold_keyword_performance" {
       type = "double"
     }
   }
+}
+
+# ---- Step Functions (orchestration) ----
+#
+# Replaces the raw S3→Lambda fire-and-forget trigger with a managed state machine.
+# The S3 event now triggers Step Functions via EventBridge; Lambda is invoked as
+# a task inside the workflow rather than directly, enabling:
+#   - Retries with exponential back-off per step
+#   - Timeout enforcement
+#   - Failure notifications (SNS/CloudWatch)
+#   - Extensibility: add Glue job, data quality check, or notification steps
+#
+# Orchestration flow:
+#   S3 ObjectCreated (landing/)
+#     └─► EventBridge Rule
+#           └─► Step Functions state machine
+#                 ├─ ProcessFile (Lambda, up to 3 retries)
+#                 └─ on failure → CloudWatch alarm triggers
+
+resource "aws_iam_role" "step_functions_role" {
+  name = "${var.project_name}-sfn-${var.environment}"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Action    = "sts:AssumeRole"
+      Effect    = "Allow"
+      Principal = { Service = "states.amazonaws.com" }
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "step_functions_invoke_lambda" {
+  name = "invoke-lambda"
+  role = aws_iam_role.step_functions_role.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = "lambda:InvokeFunction"
+      Resource = aws_lambda_function.analyzer.arn
+    }]
+  })
+}
+
+resource "aws_sfn_state_machine" "pipeline" {
+  name     = "${var.project_name}-${var.environment}"
+  role_arn = aws_iam_role.step_functions_role.arn
+
+  definition = jsonencode({
+    Comment = "Search Keyword Analyzer pipeline — processes S3 landing file through Lambda"
+    StartAt = "ProcessFile"
+    States = {
+      ProcessFile = {
+        Type     = "Task"
+        Resource = aws_lambda_function.analyzer.arn
+        Retry = [{
+          ErrorEquals     = ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException", "States.TaskFailed"]
+          IntervalSeconds = 5
+          MaxAttempts     = 3
+          BackoffRate     = 2
+        }]
+        Catch = [{
+          ErrorEquals = ["States.ALL"]
+          Next        = "PipelineFailed"
+        }]
+        End = true
+      }
+      PipelineFailed = {
+        Type  = "Fail"
+        Error = "PipelineError"
+        Cause = "Lambda processing failed after retries — check CloudWatch logs"
+      }
+    }
+  })
+}
+
+# EventBridge rule: S3 landing/ uploads → Step Functions (replaces direct S3→Lambda trigger)
+# Note: S3 must have EventBridge notifications enabled; the bucket notification resource
+# below switches from Lambda to EventBridge as the delivery target.
+
+resource "aws_iam_role" "eventbridge_role" {
+  name = "${var.project_name}-eb-${var.environment}"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Action    = "sts:AssumeRole"
+      Effect    = "Allow"
+      Principal = { Service = "events.amazonaws.com" }
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "eventbridge_start_sfn" {
+  name = "start-step-functions"
+  role = aws_iam_role.eventbridge_role.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = "states:StartExecution"
+      Resource = aws_sfn_state_machine.pipeline.arn
+    }]
+  })
+}
+
+resource "aws_cloudwatch_event_rule" "s3_landing_upload" {
+  name        = "${var.project_name}-landing-upload-${var.environment}"
+  description = "Fires when a file is uploaded to the landing/ prefix"
+  event_pattern = jsonencode({
+    source      = ["aws.s3"]
+    detail-type = ["Object Created"]
+    detail = {
+      bucket = { name = [aws_s3_bucket.data_lake.id] }
+      object = { key = [{ prefix = "landing/" }] }
+    }
+  })
+}
+
+resource "aws_cloudwatch_event_target" "trigger_pipeline" {
+  rule     = aws_cloudwatch_event_rule.s3_landing_upload.name
+  arn      = aws_sfn_state_machine.pipeline.arn
+  role_arn = aws_iam_role.eventbridge_role.arn
+
+  # Pass the S3 event detail directly as the state machine input
+  input_transformer {
+    input_paths = {
+      bucket = "$.detail.bucket.name"
+      key    = "$.detail.object.key"
+    }
+    input_template = <<-EOT
+      {
+        "Records": [{
+          "s3": {
+            "bucket": { "name": "<bucket>" },
+            "object": { "key": "<key>" }
+          }
+        }]
+      }
+    EOT
+  }
+}
+
+# Enable EventBridge notifications on the S3 bucket (required for the rule above)
+resource "aws_s3_bucket_notification" "landing_trigger" {
+  bucket      = aws_s3_bucket.data_lake.id
+  eventbridge = true
 }
 
 # ---- Outputs ----
@@ -789,4 +943,25 @@ output "developer_role_arn" {
 output "pii_kms_key_arn" {
   description = "PII KMS key — admin role can decrypt, Lambda can encrypt, developers have no access"
   value       = aws_kms_key.pii_key.arn
+}
+
+output "state_machine_arn" {
+  description = "Step Functions pipeline — triggered by S3 landing/ uploads via EventBridge"
+  value       = aws_sfn_state_machine.pipeline.arn
+}
+
+output "iceberg_table_init_sql" {
+  description = "Run these in Athena after first deploy to initialize Iceberg table metadata"
+  value       = <<-EOT
+    -- Run once in Athena workgroup: ${aws_athena_workgroup.analytics.name}
+    -- Database: ${aws_glue_catalog_database.analytics.name}
+
+    CREATE TABLE IF NOT EXISTS ${aws_glue_catalog_database.analytics.name}.bronze_hits_masked
+    WITH (table_type='ICEBERG', location='s3://${aws_s3_bucket.data_lake.id}/bronze/masked/', format='PARQUET', write_compression='SNAPPY', partitioning=ARRAY['day(ingestion_date)'])
+    AS SELECT * FROM ${aws_glue_catalog_database.analytics.name}.bronze_hits_masked WHERE 1=0;
+
+    CREATE TABLE IF NOT EXISTS ${aws_glue_catalog_database.analytics.name}.gold_keyword_performance
+    WITH (table_type='ICEBERG', location='s3://${aws_s3_bucket.data_lake.id}/gold/', format='PARQUET', write_compression='SNAPPY')
+    AS SELECT * FROM ${aws_glue_catalog_database.analytics.name}.gold_keyword_performance WHERE 1=0;
+  EOT
 }
