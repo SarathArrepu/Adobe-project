@@ -31,7 +31,7 @@ jobs:
       - name: Test local pipeline (no AWS)
         run: |
           mkdir -p output
-          python src/search_keyword_analyzer.py data/data.sql -o output/
+          PYTHONPATH=src python src/shared/search_keyword_analyzer.py data/data.sql -o output/
           ls -la output/
 
   # ── Job 2: Package Lambda & upload artifact ───────────────────────────────
