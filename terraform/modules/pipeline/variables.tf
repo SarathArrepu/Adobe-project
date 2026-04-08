@@ -1,9 +1,9 @@
 # ---- Pipeline Module Variables ----
-# Every pipeline (adobe, salesforce, etc.) declares these.
+# Every pipeline declares these.
 # Only source_name, lambda_handler, bronze_columns, and gold_columns differ per source.
 
 variable "source_name" {
-  description = "Short identifier for the data source (e.g. 'adobe', 'salesforce'). Used in resource names, S3 prefixes, and Glue table names."
+  description = "Short identifier for the data source (e.g. 'adobe'). Used in resource names, S3 prefixes, and Glue table names."
   type        = string
 }
 

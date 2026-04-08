@@ -1,8 +1,7 @@
 """
 Shared utilities for all pipeline Lambda handlers.
 
-Every source handler (pipelines/adobe/handler.py, pipelines/salesforce/handler.py, etc.)
-imports from here. Transformation logic lives in the source-specific handler; plumbing lives here.
+Every source handler imports from here. Transformation logic lives in the source-specific handler; plumbing lives here.
 """
 
 import io

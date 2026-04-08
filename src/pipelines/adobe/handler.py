@@ -10,7 +10,7 @@ Reads the hit-level TSV, runs keyword attribution, and writes:
 To add a new data source:
   1. Copy this directory to src/pipelines/<source>/
   2. Replace SearchKeywordAnalyzer with your transformation class
-  3. Add a module block in terraform/pipelines.tf (see the salesforce example comment)
+  3. Add a module block in terraform/pipelines.tf
   4. terraform apply
 """
 

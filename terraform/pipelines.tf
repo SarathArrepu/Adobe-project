@@ -63,42 +63,13 @@ module "adobe_pipeline" {
 }
 
 # ============================================================
-# To add a new source (e.g. Salesforce):
-#   1. Create src/pipelines/salesforce/handler.py
-#      (copy adobe handler, update transformation logic only)
-#   2. Copy the block below, uncomment, set source_name + columns
-#   3. terraform apply — Lambda, Glue tables, EventBridge rule all created
+# To add a new source, add a module block here:
+#   module "<source>_pipeline" {
+#     source      = "./modules/pipeline"
+#     source_name = "<source>"
+#     lambda_handler = "pipelines.<source>.handler.lambda_handler"
+#     bronze_columns = [ ... schema ... ]
+#     gold_columns   = [ ... schema ... ]
+#     # Shared vars — copy from adobe_pipeline block above
+#   }
 # ============================================================
-
-# module "salesforce_pipeline" {
-#   source = "./modules/pipeline"
-#
-#   source_name    = "salesforce"
-#   lambda_handler = "pipelines.salesforce.handler.lambda_handler"
-#
-#   bronze_columns = [
-#     { name = "contact_id", type = "string", comment = "" },
-#     { name = "event_date", type = "string", comment = "" },
-#     { name = "revenue",    type = "double",  comment = "" },
-#   ]
-#   gold_columns = [
-#     { name = "campaign", type = "string", comment = "" },
-#     { name = "revenue",  type = "double",  comment = "" },
-#   ]
-#
-#   # Shared infrastructure — identical for every pipeline
-#   project_name          = var.project_name
-#   environment           = var.environment
-#   aws_region            = var.aws_region
-#   aws_account_id        = data.aws_caller_identity.current.account_id
-#   s3_bucket_id          = aws_s3_bucket.data_lake.id
-#   s3_bucket_arn         = aws_s3_bucket.data_lake.arn
-#   kms_key_arn           = aws_kms_key.data_key.arn
-#   pii_kms_key_arn       = aws_kms_key.pii_key.arn
-#   glue_database_name    = aws_glue_catalog_database.analytics.name
-#   athena_workgroup_name = aws_athena_workgroup.analytics.name
-#   lambda_zip_path       = data.archive_file.lambda_zip.output_path
-#   lambda_zip_hash       = data.archive_file.lambda_zip.output_base64sha256
-#   lambda_timeout_seconds = var.lambda_timeout_seconds
-#   lambda_memory_mb      = var.lambda_memory_mb
-# }
