@@ -150,6 +150,13 @@ jobs:
         working-directory: terraform
         run: terraform init
 
+      - name: Clean up old Athena workgroup
+        run: |
+          aws athena delete-work-group \
+            --work-group search-keyword-analyzer-dev \
+            --recursive-delete-option \
+            2>/dev/null && echo "Deleted old workgroup" || echo "Workgroup not found or already deleted"
+
       - name: Terraform Apply
         working-directory: terraform
         run: terraform apply -auto-approve
