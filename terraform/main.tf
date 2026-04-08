@@ -6,6 +6,16 @@ terraform {
       version = "~> 5.0"
     }
   }
+
+  # Remote state — shared across all CI runs and local developer machines.
+  # The state bucket is intentionally NOT managed by this config (bootstrap-only).
+  # To initialise: terraform init
+  # State bucket created once via: aws s3 mb s3://tfstate-search-keyword-analyzer-<account_id>
+  backend "s3" {
+    bucket = "tfstate-search-keyword-analyzer-107422471374"
+    key    = "search-keyword-analyzer/dev/terraform.tfstate"
+    region = "us-east-1"
+  }
 }
 
 provider "aws" {
