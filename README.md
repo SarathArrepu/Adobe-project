@@ -1,175 +1,272 @@
 # Search Keyword Performance Analyzer
 
+> Adobe Data Engineer Assessment — Python + AWS Lambda + Terraform + GitHub Actions
+
 ## Business Problem
 
 The client wants to understand **how much revenue is driven by external search engines** (Google, Yahoo, Bing/MSN) and **which search keywords perform best** based on revenue.
 
-This Python application processes Adobe Analytics hit-level data, attributes purchase revenue to the originating search engine and keyword, and outputs a ranked report.
+This application processes Adobe Analytics hit-level data, attributes purchase revenue to the originating search engine and keyword, and outputs a ranked report.
 
-## How It Works
+## Results (from provided sample data)
 
-### Attribution Logic
+| Search Engine Domain | Search Keyword | Revenue |
+|---|---|---|
+| google.com | Ipod | $290.00 |
+| bing.com | Zune | $250.00 |
+| google.com | ipod | $190.00 |
 
-1. **Visitor Identification** — Each unique IP address is treated as a distinct visitor (the dataset does not include a cookie/visitor ID).
-2. **Search Engine Detection** — When a visitor arrives from an external search engine (Google, Yahoo, Bing), the referrer URL is parsed to extract the search engine domain and the keyword.
-3. **Revenue Attribution** — When a purchase event (`event_list` contains `1`) occurs, the revenue from `product_list` is attributed to the search engine and keyword that originally brought the visitor. Revenue is only counted on purchase events, as specified in Appendix B of the requirements.
-4. **Aggregation** — Revenue is summed per (search engine domain, keyword) pair and sorted descending.
+Three visitors arrived from search engines. One Yahoo visitor ("cd player") browsed but did not purchase — correctly excluded from results.
 
-### Architecture
+---
+
+## Architecture
 
 ```
-┌──────────────────────────────────────────────────────┐
-│                   Input: TSV File                    │
-│            (hit-level data, streamed row by row)     │
-└──────────────┬───────────────────────────────────────┘
-               │
-               ▼
-┌──────────────────────────────────────────────────────┐
-│           SearchKeywordAnalyzer.process()            │
-│                                                      │
-│  For each row:                                       │
-│  1. Parse referrer → detect search engine + keyword  │
-│  2. Track attribution per visitor IP                 │
-│  3. On purchase event → extract revenue              │
-│  4. Aggregate revenue by (engine, keyword)           │
-└──────────────┬───────────────────────────────────────┘
-               │
-               ▼
-┌──────────────────────────────────────────────────────┐
-│          Output: YYYY-MM-DD_SearchKeyword            │
-│                  Performance.tab                     │
-│  (tab-delimited, sorted by revenue desc)             │
-└──────────────────────────────────────────────────────┘
+                    ┌─────────────────────────────────────────────────┐
+                    │              GitHub Actions CI/CD                │
+                    │                                                  │
+                    │  Push/PR → Test → Package → Terraform Apply      │
+                    └──────────────────────┬──────────────────────────┘
+                                           │ deploys
+                                           ▼
+┌──────────┐   upload    ┌─────────────────────────────────────────────┐
+│ data.sql │ ──────────► │  S3: landing/data.sql                       │
+└──────────┘             │      │                                      │
+                         │      │ S3 event trigger                     │
+                         │      ▼                                      │
+                         │  Lambda (Python 3.12)                       │
+                         │      │                                      │
+                         │      ├── bronze/data.sql  (raw archive)     │
+                         │      └── gold/YYYY-MM-DD_SearchKeyword      │
+                         │              Performance.tab  (output)      │
+                         │                                             │
+                         │  Glue Catalog ──► Athena (SQL queries)      │
+                         │  KMS (encryption at rest, all layers)       │
+                         │  CloudWatch (logs + error alarm)            │
+                         └─────────────────────────────────────────────┘
 ```
+
+### Medallion Lakehouse Layers
+
+| Layer | S3 Prefix | Contents | Retention |
+|---|---|---|---|
+| Landing | `landing/` | Raw uploads (trigger zone) | 60 days |
+| Bronze | `bronze/` | Raw archive (immutable copy) | 1 year → Glacier |
+| Gold | `gold/` | Aggregated output reports | 1 year |
+| Athena Results | `athena-results/` | Query scratch space | 7 days |
+
+---
+
+## Attribution Logic
+
+1. **Visitor Identification** — Each unique IP address is a distinct visitor
+2. **Search Engine Detection** — Referrer URL is parsed to extract engine domain and keyword
+3. **Revenue Attribution** — On purchase event (`event_list` contains `1`), revenue from `product_list` is attributed to the last search engine that brought the visitor
+4. **Aggregation** — Revenue summed per (engine, keyword) pair, sorted descending
+
+---
 
 ## Project Structure
 
 ```
-adobe-assessment/
+.
 ├── src/
-│   └── search_keyword_analyzer.py    # Main application with SearchKeywordAnalyzer class
+│   ├── search_keyword_analyzer.py    # Core analyzer class
+│   └── lambda_handler.py             # AWS Lambda entry point
 ├── tests/
-│   └── test_analyzer.py              # 26 unit tests
+│   └── test_analyzer.py              # Unit tests
+├── terraform/
+│   └── main.tf                       # All AWS infrastructure
 ├── data/
-│   └── data.sql                      # Provided hit-level data file
-├── output/                           # Generated output files
+│   └── data.sql                      # Sample hit-level data
+├── .github/
+│   └── workflows/
+│       └── ci-cd.yml                 # GitHub Actions pipeline
+├── output/                           # Generated reports (gitignored)
+├── dist/                             # Lambda zip artifacts (gitignored)
 ├── README.md
+├── RUNBOOK.md                        # Full operational guide
+├── DEPLOYMENT.md                     # Quick deployment reference
 └── requirements.txt                  # No external dependencies
 ```
 
-## Setup & Execution
+---
 
-### Prerequisites
-- Python 3.8+
-- No external dependencies (uses only the Python standard library)
+## Quick Start
 
-### Running the Application
+### Local (no AWS required)
 
 ```bash
+# Run analyzer
 python src/search_keyword_analyzer.py data/data.sql
-```
 
-With a custom output directory:
-
-```bash
-python src/search_keyword_analyzer.py data/data.sql -o /path/to/output/
-```
-
-### Running Tests
-
-```bash
+# Run tests
 python -m unittest tests.test_analyzer -v
 ```
 
-### Expected Output (from provided sample data)
+### AWS Deployment
 
-```
-Search Engine Domain     Search Keyword       Revenue
--------------------------------------------------------
-google.com               Ipod                  290.00
-bing.com                 Zune                  250.00
-google.com               ipod                  190.00
-```
+**Prerequisites:** AWS CLI configured, Terraform installed
 
-Three visitors arrived from search engines. Two came from Google (different keyword casing), one from Bing. One Yahoo visitor ("cd player") browsed but did not purchase, so they do not appear in the revenue report.
-
-## AWS Deployment
-
-For AWS deployment, this application can run as:
-
-- **AWS Lambda + S3**: Triggered when a data file is uploaded to an S3 bucket. The Lambda reads the file from S3, processes it, and writes the output back to S3.
-- **AWS Glue / EMR**: For production-scale processing (see Scalability below).
-
-A basic Lambda handler would wrap the existing class:
-
-```python
-import boto3
-from search_keyword_analyzer import SearchKeywordAnalyzer
-
-def lambda_handler(event, context):
-    s3 = boto3.client('s3')
-    bucket = event['Records'][0]['s3']['bucket']['name']
-    key = event['Records'][0]['s3']['object']['key']
-
-    local_input = '/tmp/input.tsv'
-    s3.download_file(bucket, key, local_input)
-
-    analyzer = SearchKeywordAnalyzer(local_input)
-    analyzer.process()
-    output_path = analyzer.write_output('/tmp/output')
-
-    s3.upload_file(output_path, bucket, f"output/{os.path.basename(output_path)}")
+```bash
+cd terraform
+terraform init
+terraform apply
 ```
 
-## Scalability Considerations
+Then trigger the pipeline:
 
-The current application reads the file **line by line** using `csv.DictReader`, which means memory usage is O(unique visitors) rather than O(file size). This is already efficient for moderate file sizes.
+```bash
+# Get bucket name from terraform output
+BUCKET=$(cd terraform && terraform output -raw s3_bucket)
 
-However, for **10 GB+ files**, several improvements would be needed:
+# Upload data file → triggers Lambda automatically
+aws s3 cp data/data.sql s3://$BUCKET/landing/data.sql
 
-### Current Bottlenecks
-1. **Single-threaded processing** — one core processes the entire file sequentially.
-2. **In-memory visitor map** — the `_visitor_search_attribution` dict grows with unique IPs. At scale (millions of IPs), this could become large.
-3. **Lambda limitations** — AWS Lambda has a 15-minute timeout and 10 GB ephemeral storage, which may not be sufficient.
-
-### Recommended Improvements for Scale
-
-| Approach | When to Use | How |
-|----------|-------------|-----|
-| **Chunked reading with multiprocessing** | 10-50 GB files, single machine | Split file into chunks, process in parallel, merge results |
-| **Apache Spark on EMR** | 50+ GB files, recurring jobs | Distribute across cluster, native DataFrame operations |
-| **AWS Glue (PySpark)** | Serverless, AWS-native | Managed Spark, auto-scaling, integrates with S3/Glue Catalog |
-| **Streaming with Kinesis** | Real-time processing | Process hits as they arrive instead of batch |
-
-### Spark Implementation Sketch
-
-```python
-from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, sum as spark_sum, udf
-from pyspark.sql.types import StringType, StructType, StructField
-
-spark = SparkSession.builder.appName("SearchKeywordAnalyzer").getOrCreate()
-
-# Read TSV — Spark handles partitioning automatically
-df = spark.read.csv("s3://bucket/data.sql", sep="\t", header=True)
-
-# Parse referrer UDF, filter purchases, extract revenue, group by keyword
-# ... (same logic, distributed across cluster)
+# Wait ~20 seconds, then check output
+aws s3 ls s3://$BUCKET/gold/
 ```
 
-### Additional Production Hardening
-- **Logging & monitoring**: CloudWatch metrics for processing time, row counts, error rates.
-- **Data validation**: Schema checks on input file before processing.
-- **Idempotency**: Check if output already exists for a given date before reprocessing.
-- **Configuration**: Externalize search engine definitions (domains, query params) to a config file so new engines can be added without code changes.
-- **Session handling**: For production, use a proper visitor ID (cookie-based) rather than IP, and implement session windowing to handle returning visitors.
+### Full Demo (one command)
+
+```bash
+chmod +x demo.sh && ./demo.sh
+```
+
+---
+
+## GitHub Actions CI/CD
+
+Every push to `main` runs the full pipeline automatically:
+
+```
+Push / PR / Manual trigger
+        │
+        ▼
+  ┌─────────────┐
+  │ Unit Tests  │  python -m unittest (no AWS needed)
+  └──────┬──────┘
+         │ pass
+         ▼
+  ┌─────────────┐
+  │Package Lambda│  zip src/ → GitHub artifact (30-day retention)
+  └──────┬──────┘
+         │
+    ┌────┴──────┐
+    ▼           ▼
+ [PR only]  [push to main]
+ Terraform   Terraform
+   Plan       Apply
+(PR comment) (live deploy)
+```
+
+### Branch Protection
+
+- Direct pushes to `main` are **blocked**
+- All changes require a **Pull Request** with 1 approval
+- **Unit Tests** and **Package Lambda** CI jobs must pass before merge
+- Force pushes and branch deletion are disabled
+
+### Developer Workflow
+
+```bash
+git checkout main && git pull origin main
+git checkout -b feature/my-change
+# ... make changes ...
+git push -u origin feature/my-change
+gh pr create --title "My change" --body "Description"
+# After review + CI pass → merge via GitHub UI
+```
+
+---
+
+## AWS Infrastructure
+
+All resources provisioned via Terraform (`terraform/main.tf`):
+
+| Resource | Name | Purpose |
+|---|---|---|
+| S3 Bucket | `search-keyword-analyzer-dev-{account}` | Medallion data lake |
+| Lambda | `search-keyword-analyzer-dev` | Processing engine |
+| IAM Role | `search-keyword-analyzer-lambda-dev` | Least-privilege execution role |
+| KMS Key | `alias/search-keyword-analyzer-dev` | Encryption at rest (auto-rotates) |
+| Glue Database | `search_keyword_analyzer_dev` | Schema registry |
+| Glue Tables | `bronze_hits`, `gold_keyword_performance` | Athena queryable tables |
+| Athena Workgroup | `search-keyword-analyzer-dev` | Query engine (100 MB scan limit) |
+| CloudWatch | `/aws/lambda/search-keyword-analyzer-dev` | Logs + error alarm |
+
+### Security
+
+- All S3 data encrypted with customer-managed KMS (SSE-KMS), bucket key enabled
+- Glue Data Catalog encrypted with same KMS key
+- S3 public access fully blocked
+- Lambda IAM role uses least-privilege (only the specific S3/KMS/CloudWatch actions needed)
+- KMS key rotation enabled (annual, automatic)
+- GitHub secrets used for CI/CD credentials (never hardcoded)
+
+---
+
+## Querying Results with Athena
+
+**Console:** AWS → Athena → Workgroup: `search-keyword-analyzer-dev` → Database: `search_keyword_analyzer_dev`
+
+```sql
+-- Top keywords by revenue
+SELECT * FROM gold_keyword_performance ORDER BY revenue DESC;
+
+-- Raw hit data
+SELECT pagename, COUNT(*) AS hits
+FROM bronze_hits
+GROUP BY pagename ORDER BY hits DESC;
+
+-- Purchase events only
+SELECT date_time, ip, geo_city, product_list
+FROM bronze_hits
+WHERE event_list LIKE '%1%';
+```
+
+**CLI:**
+```bash
+aws athena start-query-execution \
+  --query-string "SELECT * FROM gold_keyword_performance ORDER BY revenue DESC" \
+  --work-group "search-keyword-analyzer-dev" \
+  --query-execution-context "Database=search_keyword_analyzer_dev"
+```
+
+---
+
+## Scalability
+
+The current application streams the file row by row (`csv.DictReader`), so memory usage is O(unique visitors), not O(file size). This handles moderate files efficiently.
+
+For **10 GB+ files**:
+
+| Approach | When | How |
+|---|---|---|
+| Chunked multiprocessing | 10–50 GB, single machine | Split file, process in parallel, merge |
+| AWS Glue (PySpark) | 50+ GB, serverless | Managed Spark, auto-scaling, S3-native |
+| EMR | Very large recurring jobs | Full Spark cluster, maximum control |
+| Kinesis Streams | Real-time hits | Process as events arrive, no batching |
+
+Key bottlenecks at scale: single-threaded processing, in-memory visitor attribution dict (grows with unique IPs), Lambda 15-min timeout and 10 GB `/tmp` limit.
+
+---
 
 ## Design Decisions
 
-1. **IP as visitor ID**: The data doesn't include a visitor/cookie ID, so IP is the best available proxy. In production Adobe Analytics data, `visid_high + visid_low` would be used instead.
+1. **IP as visitor ID** — The dataset has no cookie/visitor ID. In production Adobe Analytics data, `visid_high + visid_low` would be used instead.
 
-2. **Keyword case sensitivity**: "Ipod" and "ipod" are treated as separate keywords because the requirement doesn't specify normalization. This preserves the raw search data. In a production setting, I'd discuss with the client whether to normalize.
+2. **Keyword case sensitivity** — "Ipod" and "ipod" are treated separately (raw data preserved). In production, discuss normalization with the client.
 
-3. **Standard library only**: No external dependencies (pandas, etc.) — the application uses only `csv`, `urllib.parse`, `argparse`, and `collections`. This simplifies deployment and reduces Lambda package size.
+3. **Standard library only** — No pandas or external deps. Simplifies Lambda packaging and reduces cold start time.
 
-4. **Line-by-line processing**: The file is streamed row by row, never loaded entirely into memory. This is the foundation for scaling to larger files.
+4. **Line-by-line streaming** — File is never fully loaded into memory. Foundation for future scale improvements.
+
+---
+
+## Tear Down
+
+```bash
+cd terraform && terraform destroy -auto-approve
+```

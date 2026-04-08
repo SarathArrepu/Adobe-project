@@ -83,6 +83,7 @@ resource "aws_s3_bucket_public_access_block" "data_lake" {
 resource "aws_s3_bucket_lifecycle_configuration" "data_lake" {
   bucket = aws_s3_bucket.data_lake.id
 
+  # landing/ — raw uploads; move to Glacier quickly, delete after 60 days
   rule {
     id     = "archive-landing"
     status = "Enabled"
@@ -91,8 +92,12 @@ resource "aws_s3_bucket_lifecycle_configuration" "data_lake" {
       days          = 30
       storage_class = "GLACIER"
     }
+    expiration {
+      days = 60
+    }
   }
 
+  # bronze/ — raw archive; IA after 90d, Glacier after 180d, delete after 1yr
   rule {
     id     = "archive-bronze"
     status = "Enabled"
@@ -100,6 +105,47 @@ resource "aws_s3_bucket_lifecycle_configuration" "data_lake" {
     transition {
       days          = 90
       storage_class = "STANDARD_IA"
+    }
+    transition {
+      days          = 180
+      storage_class = "GLACIER"
+    }
+    expiration {
+      days = 365
+    }
+  }
+
+  # gold/ — output reports; IA after 180d, delete after 1yr
+  rule {
+    id     = "archive-gold"
+    status = "Enabled"
+    filter { prefix = "gold/" }
+    transition {
+      days          = 180
+      storage_class = "STANDARD_IA"
+    }
+    expiration {
+      days = 365
+    }
+  }
+
+  # athena-results/ — query scratch space; delete after 7 days
+  rule {
+    id     = "expire-athena-results"
+    status = "Enabled"
+    filter { prefix = "athena-results/" }
+    expiration {
+      days = 7
+    }
+  }
+
+  # Clean up incomplete multipart uploads older than 7 days
+  rule {
+    id     = "abort-incomplete-multipart"
+    status = "Enabled"
+    filter { prefix = "" }
+    abort_incomplete_multipart_upload {
+      days_after_initiation = 7
     }
   }
 }
@@ -229,6 +275,21 @@ resource "aws_athena_workgroup" "analytics" {
       }
     }
     bytes_scanned_cutoff_per_query = 104857600
+  }
+}
+
+# ---- Glue Catalog encryption ----
+
+resource "aws_glue_data_catalog_encryption_settings" "catalog" {
+  data_catalog_encryption_settings {
+    connection_password_encryption {
+      aws_kms_key_id                       = aws_kms_key.data_key.arn
+      return_connection_password_encrypted = true
+    }
+    encryption_at_rest {
+      catalog_encryption_mode = "SSE-KMS"
+      sse_aws_kms_key_id      = aws_kms_key.data_key.arn
+    }
   }
 }
 
