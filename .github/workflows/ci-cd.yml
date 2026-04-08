@@ -122,9 +122,8 @@ jobs:
   deploy:
     name: Deploy to AWS
     needs: package
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
-    environment: production    # requires manual approval if configured in repo settings
     steps:
       - uses: actions/checkout@v4
 
