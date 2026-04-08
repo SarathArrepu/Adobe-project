@@ -550,13 +550,12 @@ resource "aws_cloudwatch_dashboard" "pipeline_ops" {
         width  = 8
         height = 6
         properties = {
-          title  = "Lambda Invocations"
-          view   = "timeSeries"
-          period = 3600
-          stat   = "Sum"
-          metrics = [
-            ["AWS/Lambda", "Invocations", "FunctionName", aws_lambda_function.analyzer.function_name]
-          ]
+          title   = "Lambda Invocations"
+          view    = "timeSeries"
+          region  = var.aws_region
+          period  = 3600
+          stat    = "Sum"
+          metrics = [["AWS/Lambda", "Invocations", "FunctionName", aws_lambda_function.analyzer.function_name]]
         }
       },
       {
@@ -568,6 +567,7 @@ resource "aws_cloudwatch_dashboard" "pipeline_ops" {
         properties = {
           title  = "Lambda Duration (ms) — drives cost"
           view   = "timeSeries"
+          region = var.aws_region
           period = 3600
           metrics = [
             ["AWS/Lambda", "Duration", "FunctionName", aws_lambda_function.analyzer.function_name, { stat = "Average", label = "Avg" }],
@@ -584,6 +584,7 @@ resource "aws_cloudwatch_dashboard" "pipeline_ops" {
         properties = {
           title  = "Lambda Errors & Throttles"
           view   = "timeSeries"
+          region = var.aws_region
           period = 3600
           metrics = [
             ["AWS/Lambda", "Errors", "FunctionName", aws_lambda_function.analyzer.function_name, { stat = "Sum", color = "#d62728", label = "Errors" }],
@@ -601,6 +602,7 @@ resource "aws_cloudwatch_dashboard" "pipeline_ops" {
         properties = {
           title  = "Step Functions Executions"
           view   = "timeSeries"
+          region = var.aws_region
           period = 3600
           metrics = [
             ["AWS/States", "ExecutionsSucceeded", "StateMachineArn", aws_sfn_state_machine.pipeline.arn, { stat = "Sum", color = "#2ca02c", label = "Succeeded" }],
@@ -618,6 +620,7 @@ resource "aws_cloudwatch_dashboard" "pipeline_ops" {
         properties = {
           title  = "Step Functions Duration (ms)"
           view   = "timeSeries"
+          region = var.aws_region
           period = 3600
           metrics = [
             ["AWS/States", "ExecutionTime", "StateMachineArn", aws_sfn_state_machine.pipeline.arn, { stat = "Average" }],
@@ -634,6 +637,7 @@ resource "aws_cloudwatch_dashboard" "pipeline_ops" {
         properties = {
           title  = "Athena Data Scanned (bytes) — $5/TB"
           view   = "timeSeries"
+          region = var.aws_region
           period = 86400
           metrics = [
             ["AWS/Athena", "DataScannedInBytes", "WorkGroup", aws_athena_workgroup.analytics.name, { stat = "Sum" }],
@@ -649,6 +653,7 @@ resource "aws_cloudwatch_dashboard" "pipeline_ops" {
         properties = {
           title  = "KMS API Calls — $0.03/10k"
           view   = "timeSeries"
+          region = var.aws_region
           period = 86400
           metrics = [
             ["AWS/KMS", "NumberOfRequestsSucceeded", "KeyId", aws_kms_key.data_key.key_id, { stat = "Sum", label = "data_key" }],
@@ -664,6 +669,7 @@ resource "aws_cloudwatch_dashboard" "pipeline_ops" {
         height = 6
         properties = {
           title  = "Active Alarms"
+          region = var.aws_region
           alarms = [aws_cloudwatch_metric_alarm.lambda_errors.arn]
         }
       },
