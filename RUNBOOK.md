@@ -15,9 +15,10 @@ Complete setup guide, naming standards, error reference, security configuration,
 7. [S3 Lifecycle Rules](#7-s3-lifecycle-rules)
 8. [Creating a New Lambda Function](#8-creating-a-new-lambda-function)
 9. [Security & Encryption](#9-security--encryption)
-10. [GitHub Actions CI/CD](#10-github-actions-cicd)
-11. [Common Errors & Fixes](#11-common-errors--fixes)
-12. [Tear Down](#12-tear-down)
+10. [PII Data Handling & Role-Based Access Control](#10-pii-data-handling--role-based-access-control)
+11. [GitHub Actions CI/CD](#11-github-actions-cicd)
+12. [Common Errors & Fixes](#12-common-errors--fixes)
+13. [Tear Down](#13-tear-down)
 
 ---
 
@@ -530,7 +531,144 @@ def get_secret(secret_name):
 
 ---
 
-## 10. GitHub Actions CI/CD
+## 10. PII Data Handling & Role-Based Access Control
+
+### PII Fields in This Dataset
+
+| Field | Classification | Sensitivity |
+|---|---|---|
+| `ip` | Direct PII — visitor identifier | High |
+| `user_agent` | Quasi-identifier (device/browser fingerprint) | Medium |
+| `geo_city` / `geo_region` / `geo_country` | Location data | Low–Medium |
+| `date_time` | Timestamp — identifying when combined with above | Low |
+
+The gold output layer (`search_engine_domain`, `search_keyword`, `revenue`) contains **no PII** and is safe for all roles.
+
+---
+
+### Data Lakehouse PII Architecture
+
+```
+Landing/data.sql  ──►  Lambda
+                           │
+               ┌───────────┼───────────┐
+               ▼           ▼           ▼
+        bronze/raw/   bronze/masked/  gold/
+         (plaintext)   (SHA-256 hash) (no PII)
+         PII KMS Key   Standard KMS   Standard KMS
+         Admin only    Dev + Admin    Dev + Admin
+```
+
+**Three enforcement layers per data zone:**
+
+| Layer | Mechanism | Who Enforces |
+|---|---|---|
+| 1. KMS key policy | Developer has no `kms:Decrypt` on `pii_key` | AWS KMS |
+| 2. IAM role policy | Developer Deny on `s3:*` for `bronze/raw/*` | AWS IAM |
+| 3. S3 bucket policy | Bucket-level Deny on `bronze/raw/*` for developer role | AWS S3 |
+
+A **bucket policy Deny** cannot be overridden by an IAM Allow — this is the definitive backstop.
+
+---
+
+### The Two IAM Roles
+
+#### Admin Role (`search-keyword-analyzer-admin-dev`)
+- S3: Full read/write on all layers including `bronze/raw/`
+- KMS: `kms:Decrypt` on **both** `data_key` and `pii_key`
+- Glue/Athena: Access to ALL tables including `bronze_hits_raw`
+
+```bash
+# Assume admin role
+aws sts assume-role \
+  --role-arn $(cd terraform && terraform output -raw admin_role_arn) \
+  --role-session-name admin-pii-session
+```
+
+#### Developer Role (`search-keyword-analyzer-developer-dev`)
+- S3: Read-only on `bronze/masked/*` and `gold/*` only
+- KMS: `kms:Decrypt` on `data_key` only — **pii_key is explicitly absent**
+- Glue/Athena: Access to `bronze_hits_masked` and `gold_keyword_performance` only
+
+```bash
+# Assume developer role
+aws sts assume-role \
+  --role-arn $(cd terraform && terraform output -raw developer_role_arn) \
+  --role-session-name dev-session
+```
+
+---
+
+### Bronze Layer: Two Glue Tables
+
+| Glue Table | S3 Prefix | `ip` Column | `user_agent` Column | Who Can Query |
+|---|---|---|---|---|
+| `bronze_hits_raw` | `bronze/raw/` | Plaintext (e.g. `64.233.160.0`) | Plaintext (full UA string) | Admin only |
+| `bronze_hits_masked` | `bronze/masked/` | `sha256:a3f...` (hash) | `sha256:7b2...` (hash) | Admin + Developer |
+
+**Why two tables instead of Lake Formation column masking?**
+Lake Formation column masking requires additional service enablement and does not prevent a developer from downloading the underlying S3 file. Two separate S3 prefixes with different KMS keys provides stronger guarantees.
+
+---
+
+### How Admins Access Plaintext PII
+
+Admins need `kms:Decrypt` on the PII key plus `s3:GetObject` on `bronze/raw/`.
+
+**Via Athena (recommended — audit trail via CloudTrail):**
+```sql
+-- Query bronze_hits_raw as admin role
+-- Each query is logged in CloudTrail with the caller's identity
+SELECT date_time, ip, geo_city, pagename
+FROM bronze_hits_raw
+WHERE event_list LIKE '%1%'
+ORDER BY date_time;
+```
+
+**Via CLI (for investigation of a specific IP):**
+```bash
+# Download a raw file (requires admin role credentials and pii_key decrypt access)
+aws s3 cp s3://$BUCKET/bronze/raw/data.sql /tmp/raw_data.sql
+```
+
+**Decryption audit:** Every `kms:Decrypt` call on `pii_key` is logged in CloudTrail under `KMS > Decrypt`. This creates a full audit trail of who accessed plaintext PII data, when, and from which IP.
+
+---
+
+### How Developers Work with Data
+
+Developers query `bronze_hits_masked` — they see hashed values for `ip` and `user_agent`:
+
+```sql
+-- Count unique visitors (hash cardinality is preserved — same IP = same hash)
+SELECT COUNT(DISTINCT ip) AS unique_visitors
+FROM bronze_hits_masked;
+
+-- Joining masked bronze to gold works by hash (no real IP needed for analytics)
+SELECT b.pagename, g.search_keyword, g.revenue
+FROM bronze_hits_masked b
+JOIN gold_keyword_performance g ON b.referrer LIKE '%' || g.search_engine_domain || '%'
+ORDER BY g.revenue DESC;
+```
+
+> Developers can count, group, and join on `ip` because SHA-256 is deterministic. They cannot reverse the hash to find the original IP address without a rainbow table (impractical for arbitrary IPs outside RFC-1918 ranges).
+
+---
+
+### Production Hardening (Beyond This Assessment)
+
+| Enhancement | Description | Priority |
+|---|---|---|
+| HMAC-SHA256 with secret salt | Replace plain SHA-256 to prevent rainbow-table attacks on private IP ranges | High |
+| AWS Lake Formation | Column-level security in Athena without requiring separate S3 prefixes | Medium |
+| PII data retention policy | Auto-delete `bronze/raw/` after legal retention period (e.g. 90 days) | High |
+| Athena audit alerts | CloudWatch alarm on `kms:Decrypt` calls on `pii_key` > threshold | Medium |
+| VPC endpoint for S3/KMS | Ensure PII data never traverses the public internet | High |
+| AWS Macie | Automated PII discovery in S3 to catch accidental PII leakage in other layers | Medium |
+
+---
+
+## 11. GitHub Actions CI/CD
 
 ### Pipeline Overview
 
@@ -586,7 +724,7 @@ gh secret list
 
 ---
 
-## 11. Common Errors & Fixes
+## 12. Common Errors & Fixes
 
 ### AWS Setup
 
@@ -637,7 +775,7 @@ gh secret list
 
 ---
 
-## 12. Tear Down
+## 13. Tear Down
 
 ```bash
 # Remove all AWS resources

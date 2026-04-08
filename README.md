@@ -196,14 +196,41 @@ All resources provisioned via Terraform (`terraform/main.tf`):
 | Athena Workgroup | `search-keyword-analyzer-dev` | Query engine (100 MB scan limit) |
 | CloudWatch | `/aws/lambda/search-keyword-analyzer-dev` | Logs + error alarm |
 
-### Security
+### Security & PII Protection
 
-- All S3 data encrypted with customer-managed KMS (SSE-KMS), bucket key enabled
-- Glue Data Catalog encrypted with same KMS key
-- S3 public access fully blocked
-- Lambda IAM role uses least-privilege (only the specific S3/KMS/CloudWatch actions needed)
-- KMS key rotation enabled (annual, automatic)
-- GitHub secrets used for CI/CD credentials (never hardcoded)
+#### Encryption
+
+| Layer | Mechanism | Key |
+|---|---|---|
+| S3 files (all layers) | SSE-KMS | `alias/search-keyword-analyzer-dev` |
+| `bronze/raw/` (PII data) | SSE-KMS with **dedicated PII key** | `alias/search-keyword-analyzer-pii-dev` |
+| Glue Data Catalog | SSE-KMS | `alias/search-keyword-analyzer-dev` |
+| Athena query results | SSE-KMS | `alias/search-keyword-analyzer-dev` |
+| KMS key rotation | Annual, automatic | Both keys |
+
+#### PII Handling
+
+The dataset contains `ip` (direct PII) and `user_agent` (quasi-identifier). The pipeline applies **three enforcement layers** to prevent developer exposure:
+
+```
+bronze/raw/     — plaintext ip/user_agent, PII KMS key (admin role only)
+bronze/masked/  — SHA-256 hashed ip/user_agent, standard KMS key (developer accessible)
+gold/           — no PII at all (engine / keyword / revenue only)
+```
+
+| Role | bronze/raw | bronze/masked | gold | PII KMS Decrypt |
+|---|---|---|---|---|
+| Admin | Read/Write | Read/Write | Read/Write | Yes |
+| Developer | **Denied** (3 layers) | Read | Read | No |
+| Lambda | Write-only | Write | Write | No (encrypt only) |
+
+#### Additional Controls
+
+- S3 public access fully blocked (all 4 settings)
+- Lambda IAM role uses least-privilege — PII key allows encrypt but not decrypt
+- S3 bucket policy hard-denies developer role on `bronze/raw/*` (overrides any IAM Allow)
+- GitHub secrets for CI/CD credentials (never hardcoded)
+- All KMS API calls (especially `kms:Decrypt` on PII key) logged in CloudTrail for audit
 
 ---
 
