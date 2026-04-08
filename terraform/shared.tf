@@ -33,22 +33,13 @@ resource "aws_kms_key" "pii_key" {
     Version = "2012-10-17"
     Statement = [
       {
+        # Root delegation — IAM role policies control access for all principals.
+        # Lambda roles get PII encrypt via their IAM policy (modules/pipeline/main.tf).
         Sid       = "EnableRootKeyAdministration"
         Effect    = "Allow"
         Principal = { AWS = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:root" }
         Action    = "kms:*"
         Resource  = "*"
-      },
-      {
-        # Wildcard: any Lambda role named search-keyword-analyzer-lambda-*-env can encrypt.
-        # This means adding a new source pipeline auto-inherits PII encrypt permission.
-        Sid    = "AllowPipelineLambdaEncryptOnly"
-        Effect = "Allow"
-        Principal = {
-          AWS = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/${var.project_name}-lambda-*-${var.environment}"
-        }
-        Action   = ["kms:Encrypt", "kms:GenerateDataKey", "kms:DescribeKey"]
-        Resource = "*"
       },
       {
         Sid       = "AllowAdminDecrypt"
@@ -384,7 +375,8 @@ resource "aws_glue_catalog_database" "analytics" {
 # ============================================================
 
 resource "aws_athena_workgroup" "analytics" {
-  name = "${var.project_name}-${var.environment}"
+  name          = "${var.project_name}-${var.environment}"
+  force_destroy = true
   configuration {
     result_configuration {
       output_location = "s3://${aws_s3_bucket.data_lake.id}/athena-results/"
