@@ -236,25 +236,32 @@ ci(actions): bump setup-terraform to v3
 
 ### AWS Resource Naming
 
-Pattern: `{project}-{resource-type}-{environment}`
+Pattern: `{project}-{resource-type}-{environment}` for most resources.
+Glue database: `{environment}_{project}` (underscores, derived dynamically via `replace("${var.environment}_${var.project_name}", "-", "_")`).
 
-| Resource | Pattern | Example |
+| Resource | Pattern | Example (env=stg, project=adobe) |
 |---|---|---|
-| S3 Bucket | `{project}-{env}-{account-id}` | `search-keyword-analyzer-dev-107422471374` |
-| Lambda | `{project}-{env}` | `search-keyword-analyzer-dev` |
-| IAM Role | `{project}-lambda-{env}` | `search-keyword-analyzer-lambda-dev` |
-| KMS Key alias | `alias/{project}-{env}` | `alias/search-keyword-analyzer-dev` |
-| CloudWatch Log Group | `/aws/lambda/{lambda-name}` | `/aws/lambda/search-keyword-analyzer-dev` |
-| Glue Database | `{project}_{env}` (underscores) | `search_keyword_analyzer_dev` |
-| Glue Table | `{layer}_{entity}` | `gold_keyword_performance` |
-| Athena Workgroup | `{project}-{env}` | `search-keyword-analyzer-dev` |
+| S3 Bucket | `{project}-{env}-{account-id}` | `adobe-stg-107422471374` |
+| Lambda | `{project}-{source}-{env}` | `adobe-adobe-stg` |
+| IAM Role (Lambda) | `{project}-lambda-{source}-{env}` | `adobe-lambda-adobe-stg` |
+| IAM Role (Admin) | `{project}-admin-{env}` | `adobe-admin-stg` |
+| IAM Role (Developer) | `{project}-developer-{env}` | `adobe-developer-stg` |
+| KMS Key alias | `alias/{project}-{env}` | `alias/adobe-stg` |
+| KMS Key alias (PII) | `alias/{project}-pii-{env}` | `alias/adobe-pii-stg` |
+| CloudWatch Log Group | `/aws/lambda/{lambda-name}` | `/aws/lambda/adobe-adobe-stg` |
+| Glue Database | `{env}_{project}` (underscores) | `stg_adobe` |
+| Glue Tables | `{source}_{layer}` | `adobe_gold`, `adobe_bronze_masked`, `adobe_bronze_raw` |
+| Glue Crawler | `{project}-{source}-{env}-schema` | `adobe-adobe-stg-schema` |
+| Athena Workgroup | `{project}-{env}` | `adobe-stg` |
 
 ### File and Directory Naming
 
 ```
-src/                        # Python source (snake_case.py)
+src/shared/                 # Shared Python utilities (snake_case.py)
+src/pipelines/<source>/     # Per-source Lambda handler
 tests/                      # Test files (test_<module>.py)
-terraform/                  # Terraform files (main.tf, variables.tf)
+terraform/                  # Root module — split by concern
+terraform/modules/pipeline/ # Reusable pipeline module
 data/                       # Input data files
 output/                     # Generated output (gitignored)
 dist/                       # Build artifacts (gitignored)
@@ -303,7 +310,7 @@ terraform output
 
 ## 7. S3 Lifecycle Rules
 
-Lifecycle rules are defined in `terraform/main.tf` under `aws_s3_bucket_lifecycle_configuration`.
+Lifecycle rules are defined in `terraform/shared.tf` under `aws_s3_bucket_lifecycle_configuration`.
 
 ### Current Rules
 
@@ -317,7 +324,7 @@ Lifecycle rules are defined in `terraform/main.tf` under `aws_s3_bucket_lifecycl
 
 ### Adding a New Lifecycle Rule
 
-In `terraform/main.tf`, add a new `rule` block inside `aws_s3_bucket_lifecycle_configuration`:
+In `terraform/shared.tf`, add a new `rule` block inside `aws_s3_bucket_lifecycle_configuration`:
 
 ```hcl
 rule {
@@ -355,90 +362,80 @@ cd terraform && terraform apply
 
 ---
 
-## 8. Creating a New Lambda Function
+## 8. Adding a New Pipeline Source
+
+The pipeline module is reusable. Adding a new source (e.g. Salesforce) requires three steps only — no shared infrastructure changes needed.
 
 ### Step 1 — Write the handler
 
-Create `src/your_new_handler.py`:
-
-```python
-import json
-import logging
-
-logger = logging.getLogger()
-logger.setLevel(logging.INFO)
-
-def lambda_handler(event, context):
-    logger.info(f"Event: {json.dumps(event)}")
-    # your logic here
-    return {"statusCode": 200, "body": json.dumps({"status": "ok"})}
+```
+src/pipelines/salesforce/__init__.py    (empty — makes it a Python package)
+src/pipelines/salesforce/handler.py    (copy adobe handler, update transformation logic)
 ```
 
-### Step 2 — Add to Terraform
+Key things to change in the handler:
+- Replace `SearchKeywordAnalyzer` with your source-specific transformation class
+- Update the `logger.info` messages to reference the new source name
+- All S3/KMS utilities (`archive_raw`, `archive_masked`) are already in `src/shared/base_handler.py` — import them unchanged
 
-In `terraform/main.tf`:
+### Step 2 — Add module block to `terraform/pipelines.tf`
 
 ```hcl
-data "archive_file" "new_function_zip" {
-  type        = "zip"
-  source_dir  = "${path.module}/../src"
-  output_path = "${path.module}/../dist/new_function.zip"
-  excludes    = ["__pycache__"]
-}
+module "salesforce_pipeline" {
+  source = "./modules/pipeline"
 
-resource "aws_lambda_function" "new_function" {
-  function_name    = "${var.project_name}-new-function-${var.environment}"
-  role             = aws_iam_role.lambda_role.arn
-  handler          = "your_new_handler.lambda_handler"
-  runtime          = "python3.12"
-  timeout          = 60
-  memory_size      = 256
-  filename         = data.archive_file.new_function_zip.output_path
-  source_code_hash = data.archive_file.new_function_zip.output_base64sha256
+  source_name    = "salesforce"
+  lambda_handler = "pipelines.salesforce.handler.lambda_handler"
 
-  environment {
-    variables = {
-      ENVIRONMENT = var.environment
-      LOG_LEVEL   = "INFO"
-    }
-  }
-}
+  bronze_columns = [
+    { name = "contact_id",  type = "string", comment = "" },
+    { name = "event_date",  type = "string", comment = "" },
+    { name = "revenue",     type = "double",  comment = "" },
+    # add your source-specific columns
+  ]
+  gold_columns = [
+    { name = "campaign", type = "string", comment = "" },
+    { name = "revenue",  type = "double",  comment = "" },
+  ]
 
-resource "aws_cloudwatch_log_group" "new_function_logs" {
-  name              = "/aws/lambda/${aws_lambda_function.new_function.function_name}"
-  retention_in_days = 14
-}
-```
-
-### Step 3 — Add IAM permissions if needed
-
-```hcl
-resource "aws_iam_role_policy" "new_function_s3" {
-  name = "new-function-s3-access"
-  role = aws_iam_role.lambda_role.id
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Effect   = "Allow"
-      Action   = ["s3:GetObject", "s3:PutObject"]
-      Resource = "${aws_s3_bucket.data_lake.arn}/*"
-    }]
-  })
+  # Shared infrastructure — identical for every pipeline
+  project_name          = var.project_name
+  environment           = var.environment
+  aws_region            = var.aws_region
+  aws_account_id        = data.aws_caller_identity.current.account_id
+  s3_bucket_id          = aws_s3_bucket.data_lake.id
+  s3_bucket_arn         = aws_s3_bucket.data_lake.arn
+  kms_key_arn           = aws_kms_key.data_key.arn
+  pii_kms_key_arn       = aws_kms_key.pii_key.arn
+  glue_database_name    = aws_glue_catalog_database.analytics.name
+  athena_workgroup_name = aws_athena_workgroup.analytics.name
+  lambda_zip_path       = data.archive_file.lambda_zip.output_path
+  lambda_zip_hash       = data.archive_file.lambda_zip.output_base64sha256
+  lambda_timeout_seconds = var.lambda_timeout_seconds
+  lambda_memory_mb      = var.lambda_memory_mb
 }
 ```
 
-### Step 4 — Deploy
+### Step 3 — Deploy
 
 ```bash
 cd terraform && terraform apply
 ```
 
-### Step 5 — Test manually
+This automatically creates:
+- Lambda function: `adobe-salesforce-stg`
+- IAM role: `adobe-lambda-salesforce-stg`
+- EventBridge rule: triggers on `landing/salesforce/` uploads
+- Glue tables: `salesforce_bronze_masked`, `salesforce_bronze_raw`, `salesforce_gold` in `stg_adobe`
+- Glue Crawler: `adobe-salesforce-stg-schema`
+- CloudWatch log group + error alarm
+
+### Step 4 — Test manually
 
 ```bash
 aws lambda invoke \
-  --function-name search-keyword-analyzer-new-function-dev \
-  --payload '{"test": "event"}' \
+  --function-name adobe-salesforce-stg \
+  --payload file://tests/sample_salesforce_event.json \
   --cli-binary-format raw-in-base64-out \
   /tmp/response.json && cat /tmp/response.json
 ```
@@ -459,7 +456,7 @@ aws lambda invoke \
 
 ### Enable Glue Data Catalog Encryption
 
-Add to `terraform/main.tf`:
+Add to `terraform/shared.tf`:
 
 ```hcl
 resource "aws_glue_data_catalog_encryption_settings" "catalog" {
@@ -573,10 +570,10 @@ A **bucket policy Deny** cannot be overridden by an IAM Allow — this is the de
 
 ### The Two IAM Roles
 
-#### Admin Role (`search-keyword-analyzer-admin-dev`)
+#### Admin Role (`adobe-admin-stg`)
 - S3: Full read/write on all layers including `bronze/raw/`
 - KMS: `kms:Decrypt` on **both** `data_key` and `pii_key`
-- Glue/Athena: Access to ALL tables including `bronze_hits_raw`
+- Glue/Athena: Access to ALL tables including `adobe_bronze_raw`
 
 ```bash
 # Assume admin role
@@ -585,10 +582,10 @@ aws sts assume-role \
   --role-session-name admin-pii-session
 ```
 
-#### Developer Role (`search-keyword-analyzer-developer-dev`)
+#### Developer Role (`adobe-developer-stg`)
 - S3: Read-only on `bronze/masked/*` and `gold/*` only
 - KMS: `kms:Decrypt` on `data_key` only — **pii_key is explicitly absent**
-- Glue/Athena: Access to `bronze_hits_masked` and `gold_keyword_performance` only
+- Glue/Athena: Access to `*_bronze_masked` and `*_gold` tables only
 
 ```bash
 # Assume developer role
@@ -603,8 +600,8 @@ aws sts assume-role \
 
 | Glue Table | S3 Prefix | `ip` Column | `user_agent` Column | Who Can Query |
 |---|---|---|---|---|
-| `bronze_hits_raw` | `bronze/raw/` | Plaintext (e.g. `64.233.160.0`) | Plaintext (full UA string) | Admin only |
-| `bronze_hits_masked` | `bronze/masked/` | `sha256:a3f...` (hash) | `sha256:7b2...` (hash) | Admin + Developer |
+| `adobe_bronze_raw` | `bronze/raw/` | Plaintext (e.g. `64.233.160.0`) | Plaintext (full UA string) | Admin only |
+| `adobe_bronze_masked` | `bronze/masked/` | `sha256:a3f...` (hash) | `sha256:7b2...` (hash) | Admin + Developer |
 
 **Why two tables instead of Lake Formation column masking?**
 Lake Formation column masking requires additional service enablement and does not prevent a developer from downloading the underlying S3 file. Two separate S3 prefixes with different KMS keys provides stronger guarantees.
@@ -617,10 +614,10 @@ Admins need `kms:Decrypt` on the PII key plus `s3:GetObject` on `bronze/raw/`.
 
 **Via Athena (recommended — audit trail via CloudTrail):**
 ```sql
--- Query bronze_hits_raw as admin role
+-- Query adobe_bronze_raw as admin role
 -- Each query is logged in CloudTrail with the caller's identity
 SELECT date_time, ip, geo_city, pagename
-FROM bronze_hits_raw
+FROM stg_adobe.adobe_bronze_raw
 WHERE event_list LIKE '%1%'
 ORDER BY date_time;
 ```
@@ -637,17 +634,17 @@ aws s3 cp s3://$BUCKET/bronze/raw/data.sql /tmp/raw_data.sql
 
 ### How Developers Work with Data
 
-Developers query `bronze_hits_masked` — they see hashed values for `ip` and `user_agent`:
+Developers query `adobe_bronze_masked` — they see hashed values for `ip` and `user_agent`:
 
 ```sql
 -- Count unique visitors (hash cardinality is preserved — same IP = same hash)
 SELECT COUNT(DISTINCT ip) AS unique_visitors
-FROM bronze_hits_masked;
+FROM stg_adobe.adobe_bronze_masked;
 
 -- Joining masked bronze to gold works by hash (no real IP needed for analytics)
 SELECT b.pagename, g.search_keyword, g.revenue
-FROM bronze_hits_masked b
-JOIN gold_keyword_performance g ON b.referrer LIKE '%' || g.search_engine_domain || '%'
+FROM stg_adobe.adobe_bronze_masked b
+JOIN stg_adobe.adobe_gold g ON b.referrer LIKE '%' || g.search_engine_domain || '%'
 ORDER BY g.revenue DESC;
 ```
 
@@ -739,9 +736,9 @@ gh secret list
 
 | Error | Cause | Fix |
 |---|---|---|
-| `AlreadyExistsException: alias/...` | Resources exist but no local state file | Run `terraform import aws_kms_alias.data_key alias/search-keyword-analyzer-dev` |
-| `BucketAlreadyExists` | S3 bucket name taken | Change bucket name in `main.tf` |
-| `EntityAlreadyExists: Role` | IAM role exists, no state | `terraform import aws_iam_role.lambda_role search-keyword-analyzer-lambda-dev` |
+| `AlreadyExistsException: alias/...` | Resources exist but no local state file | Run `terraform import aws_kms_alias.data_key alias/adobe-stg` |
+| `BucketAlreadyExists` | S3 bucket name taken | Change bucket name in `terraform/shared.tf` |
+| `EntityAlreadyExists: Role` | IAM role exists, no state | `terraform import module.adobe_pipeline.aws_iam_role.lambda_role adobe-lambda-adobe-stg` |
 | `terraform: command not found` | Not installed | `brew install terraform` |
 | `Provider version conflict` | Lock file mismatch | Delete `.terraform.lock.hcl`, run `terraform init -upgrade` |
 

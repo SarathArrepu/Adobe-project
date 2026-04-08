@@ -59,14 +59,27 @@ terraform apply       # Type 'yes' to confirm
 
 This creates (all free tier eligible except KMS at ~$1/month):
 
-- S3 bucket with medallion prefixes (landing/bronze/silver/gold)
-- Lambda function (Python 3.12, 512MB, 5min timeout)
-- IAM role with least-privilege S3 + KMS + CloudWatch permissions
-- KMS key for encryption at rest
-- S3 event notification to trigger Lambda on file upload
+- S3 bucket with medallion prefixes (`landing/`, `bronze/`, `gold/`)
+- Lambda function (`pipelines.adobe.handler.lambda_handler`, Python 3.12, 512MB, 5min timeout)
+- IAM roles: Lambda execution (per pipeline), Admin (PII access), Developer (masked + gold)
+- Two KMS keys: standard data key + dedicated PII key
+- EventBridge rule routing `landing/adobe/` uploads to the Adobe Lambda
 - CloudWatch log group + error alarm
-- Athena workgroup with cost control (100MB scan limit)
-- Glue catalog database + Bronze and Gold table definitions
+- Athena workgroup with cost control (100 MB scan limit)
+- Glue database `stg_adobe` + three Glue tables (`adobe_bronze_masked`, `adobe_bronze_raw`, `adobe_gold`)
+- Glue Crawler for daily schema evolution
+
+**Terraform files by concern:**
+
+| File | Contents |
+|---|---|
+| `main.tf` | Provider + backend only |
+| `variables.tf` | All variable declarations |
+| `shared.tf` | S3, KMS, IAM, Glue DB, Athena (shared across all pipelines) |
+| `pipelines.tf` | Module call per pipeline |
+| `observability.tf` | CloudWatch dashboard, Budgets, QuickSight |
+| `outputs.tf` | All outputs |
+| `modules/pipeline/` | Reusable module: Lambda + IAM + EventBridge + Glue + Crawler |
 
 ---
 
@@ -80,7 +93,7 @@ chmod +x demo.sh
 This runs the full pipeline end-to-end:
 1. Verifies AWS credentials
 2. Deploys Terraform infrastructure
-3. Uploads data file to S3 landing zone
+3. Uploads data file to S3 landing zone (`landing/adobe/`)
 4. Waits for Lambda processing
 5. Downloads and displays output report
 6. Queries Gold table via Athena
@@ -90,24 +103,33 @@ This runs the full pipeline end-to-end:
 
 ## Step 4: Query with Athena
 
-Go to **AWS Console > Athena**, select workgroup `search-keyword-analyzer-dev`, database `search_keyword_analyzer_dev`.
+Go to **AWS Console > Athena**, select workgroup `adobe-stg`, database `stg_adobe`.
 
-### Gold layer (aggregated results)
+### Gold layer (aggregated results — no PII)
 
 ```sql
-SELECT * FROM gold_keyword_performance ORDER BY revenue DESC;
+SELECT * FROM stg_adobe.adobe_gold ORDER BY revenue DESC;
 ```
 
-### Bronze layer (raw hit data)
+### Bronze masked layer (pseudonymized hit data — developer accessible)
 
 ```sql
 SELECT pagename, COUNT(*) as hits
-FROM bronze_hits
+FROM stg_adobe.adobe_bronze_masked
 GROUP BY pagename
 ORDER BY hits DESC;
 
 SELECT date_time, ip, geo_city, product_list, referrer
-FROM bronze_hits
+FROM stg_adobe.adobe_bronze_masked
+WHERE event_list LIKE '%1%';
+```
+
+### Bronze raw layer (plaintext PII — admin role only)
+
+```sql
+-- Requires admin role and kms:Decrypt on PII key
+SELECT date_time, ip, geo_city, product_list
+FROM stg_adobe.adobe_bronze_raw
 WHERE event_list LIKE '%1%';
 ```
 
@@ -124,6 +146,6 @@ cd terraform && terraform destroy -auto-approve
 ## Local Testing (No AWS Required)
 
 ```bash
-python src/search_keyword_analyzer.py data/data.sql -o output/
-python -m unittest tests.test_analyzer -v
+# Run all 26 unit tests
+python3 -m unittest tests/test_analyzer.py -v
 ```

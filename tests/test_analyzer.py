@@ -15,10 +15,10 @@ import unittest
 import tempfile
 import shutil
 
-# Add src to path
+# Add src to path so shared/ and pipelines/ packages are importable
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
-from search_keyword_analyzer import SearchKeywordAnalyzer
+from shared.search_keyword_analyzer import SearchKeywordAnalyzer
 
 
 class TestParseSearchEngine(unittest.TestCase):

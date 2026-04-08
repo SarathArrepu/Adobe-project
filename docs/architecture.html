@@ -1,0 +1,379 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Architecture — Search Keyword Performance Analyzer</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #0f1117; color: #e2e8f0; min-height: 100vh; padding: 24px; }
+    h1 { font-size: 1.6rem; font-weight: 700; color: #f8fafc; margin-bottom: 4px; }
+    .subtitle { color: #94a3b8; font-size: 0.9rem; margin-bottom: 24px; }
+    h2 { font-size: 1.1rem; font-weight: 600; color: #cbd5e1; margin: 28px 0 12px; text-transform: uppercase; letter-spacing: 0.05em; }
+
+    /* Quick links grid */
+    .links-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; margin-bottom: 32px; }
+    .link-card { background: #1e2130; border: 1px solid #2d3452; border-radius: 10px; padding: 14px 16px; text-decoration: none; color: inherit; transition: border-color .2s, background .2s; }
+    .link-card:hover { border-color: #6366f1; background: #252840; }
+    .link-card .icon { font-size: 1.4rem; margin-bottom: 8px; }
+    .link-card .name { font-size: 0.85rem; font-weight: 600; color: #e2e8f0; }
+    .link-card .desc { font-size: 0.75rem; color: #64748b; margin-top: 2px; }
+    .link-card .badge { display: inline-block; font-size: 0.65rem; padding: 2px 6px; border-radius: 4px; margin-top: 6px; font-weight: 600; }
+    .badge-green  { background: #14532d; color: #86efac; }
+    .badge-yellow { background: #713f12; color: #fde047; }
+    .badge-red    { background: #7f1d1d; color: #fca5a5; }
+    .badge-blue   { background: #1e3a5f; color: #93c5fd; }
+
+    /* Flow diagram */
+    .flow { display: flex; align-items: flex-start; gap: 0; overflow-x: auto; padding-bottom: 8px; }
+    .flow-step { display: flex; flex-direction: column; align-items: center; }
+    .flow-box { background: #1e2130; border: 1px solid #2d3452; border-radius: 8px; padding: 12px 16px; min-width: 140px; text-align: center; }
+    .flow-box.trigger  { border-color: #f59e0b; }
+    .flow-box.compute  { border-color: #6366f1; }
+    .flow-box.storage  { border-color: #10b981; }
+    .flow-box.catalog  { border-color: #06b6d4; }
+    .flow-box.monitor  { border-color: #f97316; }
+    .flow-box .box-title { font-size: 0.8rem; font-weight: 700; color: #f8fafc; }
+    .flow-box .box-sub   { font-size: 0.7rem; color: #64748b; margin-top: 3px; }
+    .flow-arrow { display: flex; align-items: center; padding: 0 8px; color: #4b5563; font-size: 1.2rem; padding-top: 18px; }
+    .flow-down  { color: #4b5563; font-size: 1rem; margin: 4px 0; }
+
+    /* Layer table */
+    table { width: 100%; border-collapse: collapse; margin-bottom: 24px; font-size: 0.82rem; }
+    th { background: #1e2130; padding: 10px 14px; text-align: left; color: #94a3b8; border-bottom: 1px solid #2d3452; font-weight: 600; }
+    td { padding: 9px 14px; border-bottom: 1px solid #1e2130; vertical-align: top; }
+    tr:last-child td { border-bottom: none; }
+    tr:hover td { background: #161926; }
+    .pill { display: inline-block; font-size: 0.7rem; padding: 2px 8px; border-radius: 12px; font-weight: 600; }
+    .pill-green  { background: #14532d; color: #86efac; }
+    .pill-red    { background: #7f1d1d; color: #fca5a5; }
+    .pill-yellow { background: #713f12; color: #fde047; }
+    .pill-blue   { background: #1e3a5f; color: #93c5fd; }
+
+    /* Security matrix */
+    .sec-table td, .sec-table th { text-align: center; }
+    .sec-table td:first-child, .sec-table th:first-child { text-align: left; }
+    .check { color: #4ade80; font-weight: 700; }
+    .cross { color: #f87171; font-weight: 700; }
+
+    /* Code block */
+    pre { background: #1e2130; border: 1px solid #2d3452; border-radius: 8px; padding: 16px; font-size: 0.78rem; overflow-x: auto; color: #94a3b8; line-height: 1.6; margin-bottom: 16px; }
+    code { font-family: "JetBrains Mono", "Fira Code", monospace; }
+
+    .section { background: #141722; border: 1px solid #1e2536; border-radius: 12px; padding: 20px 24px; margin-bottom: 20px; }
+    footer { margin-top: 32px; text-align: center; font-size: 0.75rem; color: #334155; }
+  </style>
+</head>
+<body>
+
+<h1>Search Keyword Performance Analyzer</h1>
+<p class="subtitle">Adobe Data Engineering · AWS Architecture · Quick Access Links</p>
+
+<!-- ══════════════════════════════════════════════════════════ -->
+<h2>⚡ Quick Access — AWS Console</h2>
+<div class="links-grid">
+
+  <a class="link-card" href="https://s3.console.aws.amazon.com/s3/buckets/search-keyword-analyzer-dev-107422471374" target="_blank">
+    <div class="icon">🪣</div>
+    <div class="name">S3 Data Lake</div>
+    <div class="desc">Browse landing / bronze / gold layers</div>
+    <span class="badge badge-green">Active</span>
+  </a>
+
+  <a class="link-card" href="https://us-east-1.console.aws.amazon.com/lambda/home?region=us-east-1#/functions/search-keyword-analyzer-adobe-dev" target="_blank">
+    <div class="icon">λ</div>
+    <div class="name">Lambda (Adobe)</div>
+    <div class="desc">adobe_handler · Python 3.12 · 300s timeout</div>
+    <span class="badge badge-blue">Pipeline</span>
+  </a>
+
+  <a class="link-card" href="https://us-east-1.console.aws.amazon.com/cloudwatch/home?region=us-east-1#dashboards:name=search-keyword-analyzer-dev" target="_blank">
+    <div class="icon">📊</div>
+    <div class="name">CloudWatch Dashboard</div>
+    <div class="desc">Lambda health · Athena cost · KMS calls</div>
+    <span class="badge badge-yellow">Monitor</span>
+  </a>
+
+  <a class="link-card" href="https://us-east-1.console.aws.amazon.com/athena/home?region=us-east-1#/query-editor" target="_blank">
+    <div class="icon">🔍</div>
+    <div class="name">Athena Query Editor</div>
+    <div class="desc">Workgroup: search-keyword-analyzer-dev</div>
+    <span class="badge badge-blue">Analytics</span>
+  </a>
+
+  <a class="link-card" href="https://us-east-1.console.aws.amazon.com/glue/home?region=us-east-1#/v2/data-catalog/databases/view/search_keyword_analyzer_dev" target="_blank">
+    <div class="icon">🗄️</div>
+    <div class="name">Glue Data Catalog</div>
+    <div class="desc">Database: search_keyword_analyzer_dev</div>
+    <span class="badge badge-blue">Catalog</span>
+  </a>
+
+  <a class="link-card" href="https://us-east-1.console.aws.amazon.com/glue/home?region=us-east-1#/v2/data-catalog/crawlers" target="_blank">
+    <div class="icon">🕷️</div>
+    <div class="name">Glue Crawler</div>
+    <div class="desc">Daily schema discovery · 2am UTC</div>
+    <span class="badge badge-green">Scheduled</span>
+  </a>
+
+  <a class="link-card" href="https://us-east-1.console.aws.amazon.com/cloudwatch/home?region=us-east-1#alarmsV2:alarm/search-keyword-analyzer-adobe-dev-errors" target="_blank">
+    <div class="icon">🚨</div>
+    <div class="name">Error Alarm</div>
+    <div class="desc">Triggers on any Lambda error</div>
+    <span class="badge badge-red">Alarm</span>
+  </a>
+
+  <a class="link-card" href="https://us-east-1.console.aws.amazon.com/billing/home#/budgets" target="_blank">
+    <div class="icon">💰</div>
+    <div class="name">AWS Budgets</div>
+    <div class="desc">Alert at $40 (80%) and $50 (forecast)</div>
+    <span class="badge badge-yellow">Cost</span>
+  </a>
+
+  <a class="link-card" href="https://us-east-1.console.aws.amazon.com/kms/home?region=us-east-1#/kms/keys" target="_blank">
+    <div class="icon">🔑</div>
+    <div class="name">KMS Keys</div>
+    <div class="desc">data-key + pii-key · auto-rotation on</div>
+    <span class="badge badge-red">Security</span>
+  </a>
+
+  <a class="link-card" href="https://us-east-1.console.aws.amazon.com/events/home?region=us-east-1#/rules" target="_blank">
+    <div class="icon">⚡</div>
+    <div class="name">EventBridge Rules</div>
+    <div class="desc">Routes S3 uploads to pipeline Lambdas</div>
+    <span class="badge badge-blue">Trigger</span>
+  </a>
+
+  <a class="link-card" href="https://us-east-1.console.aws.amazon.com/iam/home?region=us-east-1#/roles" target="_blank">
+    <div class="icon">🛡️</div>
+    <div class="name">IAM Roles</div>
+    <div class="desc">admin · developer · lambda-adobe</div>
+    <span class="badge badge-red">Security</span>
+  </a>
+
+  <a class="link-card" href="https://us-east-1.console.aws.amazon.com/cloudwatch/home?region=us-east-1#logsV2:log-groups/log-group/$252Faws$252Flambda$252Fsearch-keyword-analyzer-adobe-dev" target="_blank">
+    <div class="icon">📋</div>
+    <div class="name">Lambda Logs</div>
+    <div class="desc">/aws/lambda/search-keyword-analyzer-adobe-dev</div>
+    <span class="badge badge-yellow">Monitor</span>
+  </a>
+
+</div>
+
+<!-- ══════════════════════════════════════════════════════════ -->
+<h2>🔄 Pipeline Flow</h2>
+<div class="section">
+  <div class="flow">
+    <div class="flow-step">
+      <div class="flow-box trigger">
+        <div class="box-title">S3 Upload</div>
+        <div class="box-sub">landing/adobe/data.sql</div>
+      </div>
+    </div>
+    <div class="flow-arrow">→</div>
+    <div class="flow-step">
+      <div class="flow-box trigger">
+        <div class="box-title">EventBridge</div>
+        <div class="box-sub">Object Created rule<br/>prefix filter per source</div>
+      </div>
+    </div>
+    <div class="flow-arrow">→</div>
+    <div class="flow-step">
+      <div class="flow-box compute">
+        <div class="box-title">Lambda</div>
+        <div class="box-sub">adobe_handler.py<br/>Python 3.12 · 512 MB</div>
+      </div>
+    </div>
+    <div class="flow-arrow">→</div>
+    <div class="flow-step">
+      <div class="flow-box storage">
+        <div class="box-title">S3 Output</div>
+        <div class="box-sub">gold/ · bronze/raw/<br/>bronze/masked/</div>
+      </div>
+    </div>
+    <div class="flow-arrow">→</div>
+    <div class="flow-step">
+      <div class="flow-box catalog">
+        <div class="box-title">Glue Catalog</div>
+        <div class="box-sub">3 Hive tables<br/>Crawler: daily 2am</div>
+      </div>
+    </div>
+    <div class="flow-arrow">→</div>
+    <div class="flow-step">
+      <div class="flow-box catalog">
+        <div class="box-title">Athena</div>
+        <div class="box-sub">SQL queries<br/>100 MB scan limit</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════ -->
+<h2>🗂️ Data Layers</h2>
+<div class="section">
+  <table>
+    <thead>
+      <tr>
+        <th>Layer</th><th>S3 Prefix</th><th>Contents</th><th>Retention</th><th>Glue Table</th><th>Access</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>Landing</strong></td>
+        <td><code>landing/adobe/</code></td>
+        <td>Raw upload — triggers pipeline</td>
+        <td>60 days → Glacier</td>
+        <td>—</td>
+        <td><span class="pill pill-blue">Lambda only</span></td>
+      </tr>
+      <tr>
+        <td><strong>Bronze Raw</strong></td>
+        <td><code>bronze/raw/</code></td>
+        <td>Original data — plaintext ip/user_agent</td>
+        <td>1 year → Glacier</td>
+        <td><code>adobe_bronze_raw</code></td>
+        <td><span class="pill pill-red">Admin only</span></td>
+      </tr>
+      <tr>
+        <td><strong>Bronze Masked</strong></td>
+        <td><code>bronze/masked/</code></td>
+        <td>SHA-256 hashed ip/user_agent</td>
+        <td>1 year → Glacier</td>
+        <td><code>adobe_bronze_masked</code></td>
+        <td><span class="pill pill-yellow">Developer + Admin</span></td>
+      </tr>
+      <tr>
+        <td><strong>Gold</strong></td>
+        <td><code>gold/</code></td>
+        <td>Aggregated keyword revenue — no PII</td>
+        <td>1 year → Standard IA</td>
+        <td><code>adobe_gold</code></td>
+        <td><span class="pill pill-green">Everyone</span></td>
+      </tr>
+      <tr>
+        <td><strong>Athena Results</strong></td>
+        <td><code>athena-results/</code></td>
+        <td>Query output cache</td>
+        <td>7 days</td>
+        <td>—</td>
+        <td><span class="pill pill-yellow">Developer + Admin</span></td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════ -->
+<h2>🔐 Access Control Matrix</h2>
+<div class="section">
+  <table class="sec-table">
+    <thead>
+      <tr>
+        <th>Resource</th>
+        <th>Admin Role</th>
+        <th>Developer Role</th>
+        <th>Lambda</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>bronze/raw/ (S3)</td>
+        <td><span class="check">✓ Read/Write</span></td>
+        <td><span class="cross">✗ Denied (3 layers)</span></td>
+        <td>Write only</td>
+      </tr>
+      <tr>
+        <td>bronze/masked/ (S3)</td>
+        <td><span class="check">✓ Read/Write</span></td>
+        <td><span class="check">✓ Read</span></td>
+        <td>Write only</td>
+      </tr>
+      <tr>
+        <td>gold/ (S3)</td>
+        <td><span class="check">✓ Read/Write</span></td>
+        <td><span class="check">✓ Read</span></td>
+        <td>Write only</td>
+      </tr>
+      <tr>
+        <td>PII KMS key decrypt</td>
+        <td><span class="check">✓ Yes</span></td>
+        <td><span class="cross">✗ No</span></td>
+        <td><span class="cross">✗ Encrypt only</span></td>
+      </tr>
+      <tr>
+        <td>adobe_bronze_raw (Glue)</td>
+        <td><span class="check">✓ Full access</span></td>
+        <td><span class="cross">✗ Denied</span></td>
+        <td>—</td>
+      </tr>
+      <tr>
+        <td>adobe_bronze_masked (Glue)</td>
+        <td><span class="check">✓ Full access</span></td>
+        <td><span class="check">✓ Read</span></td>
+        <td>—</td>
+      </tr>
+      <tr>
+        <td>adobe_gold (Glue)</td>
+        <td><span class="check">✓ Full access</span></td>
+        <td><span class="check">✓ Read</span></td>
+        <td>—</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════ -->
+<h2>🖥️ Quick Athena Queries</h2>
+<div class="section">
+  <p style="font-size:0.8rem;color:#64748b;margin-bottom:12px;">
+    Run in <a href="https://us-east-1.console.aws.amazon.com/athena/home?region=us-east-1#/query-editor" target="_blank" style="color:#6366f1;">Athena Query Editor</a> →
+    Workgroup: <code>search-keyword-analyzer-dev</code> · Database: <code>search_keyword_analyzer_dev</code>
+  </p>
+  <pre><code>-- Top keywords by revenue
+SELECT search_engine_domain, search_keyword, revenue
+FROM search_keyword_analyzer_dev.adobe_gold
+ORDER BY revenue DESC;
+
+-- Hit counts by page (masked bronze — developer accessible)
+SELECT pagename, COUNT(*) AS hits
+FROM search_keyword_analyzer_dev.adobe_bronze_masked
+GROUP BY pagename ORDER BY hits DESC;
+
+-- Purchase events with pseudonymized IP
+SELECT date_time, ip, geo_city, product_list
+FROM search_keyword_analyzer_dev.adobe_bronze_masked
+WHERE event_list LIKE '%1%';</code></pre>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════ -->
+<h2>➕ Adding a New Data Source</h2>
+<div class="section">
+  <pre><code># Step 1: Create src/salesforce_handler.py (copy adobe_handler.py, update transformation)
+
+# Step 2: Add to terraform/main.tf:
+module "salesforce_pipeline" {
+  source         = "./modules/pipeline"
+  source_name    = "salesforce"
+  lambda_handler = "salesforce_handler.lambda_handler"
+  bronze_columns = [
+    { name = "contact_id", type = "string", comment = "" },
+    { name = "revenue",    type = "double",  comment = "" },
+  ]
+  gold_columns = [
+    { name = "campaign", type = "string", comment = "" },
+    { name = "revenue",  type = "double",  comment = "" },
+  ]
+  # All infra vars identical to adobe_pipeline block
+  project_name          = var.project_name
+  ...
+}
+
+# Step 3: Push PR → CI runs terraform apply
+# Result: new Lambda + Glue tables + EventBridge rule — no manual steps</code></pre>
+</div>
+
+<footer>
+  Search Keyword Performance Analyzer · Adobe Data Engineering Assessment ·
+  <a href="https://github.com/SarathArrepu/Adobe-project" target="_blank" style="color:#6366f1;">GitHub</a>
+</footer>
+
+</body>
+</html>
