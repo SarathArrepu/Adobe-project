@@ -31,18 +31,18 @@ Three visitors arrived from search engines. One Yahoo visitor ("cd player") brow
                                            │ deploys
                                            ▼
 ┌──────────┐   upload    ┌─────────────────────────────────────────────┐
-│ data.sql │ ──────────► │  S3: landing/data.sql                       │
+│ data.sql │ ──────────► │  S3: landing/adobe/data.sql                 │
 └──────────┘             │      │                                      │
-                         │      │ S3 event trigger                     │
+                         │      │ EventBridge (Object Created)         │
                          │      ▼                                      │
-                         │  Lambda (Python 3.12)                       │
+                         │  Lambda: pipelines.adobe.handler            │
                          │      │                                      │
-                         │      ├── bronze/data.sql  (raw archive)     │
-                         │      └── gold/YYYY-MM-DD_SearchKeyword      │
-                         │              Performance.tab  (output)      │
+                         │      ├── bronze/raw/    (PII KMS key)       │
+                         │      ├── bronze/masked/ (SHA-256 hashed PII)│
+                         │      └── gold/          (no PII, output)    │
                          │                                             │
-                         │  Glue Catalog ──► Athena (SQL queries)      │
-                         │  KMS (encryption at rest, all layers)       │
+                         │  Glue Catalog (stg_adobe) ──► Athena        │
+                         │  KMS (two keys: data + PII)                 │
                          │  CloudWatch (logs + error alarm)            │
                          └─────────────────────────────────────────────┘
 ```
@@ -51,9 +51,10 @@ Three visitors arrived from search engines. One Yahoo visitor ("cd player") brow
 
 | Layer | S3 Prefix | Contents | Retention |
 |---|---|---|---|
-| Landing | `landing/` | Raw uploads (trigger zone) | 60 days |
-| Bronze | `bronze/` | Raw archive (immutable copy) | 1 year → Glacier |
-| Gold | `gold/` | Aggregated output reports | 1 year |
+| Landing | `landing/adobe/` | Raw uploads (trigger zone) | 60 days |
+| Bronze Raw | `bronze/raw/` | Original data, plaintext PII, PII KMS key | 1 year → Glacier |
+| Bronze Masked | `bronze/masked/` | SHA-256 hashed ip/user_agent | 1 year → Glacier |
+| Gold | `gold/` | Aggregated output, no PII | 1 year |
 | Athena Results | `athena-results/` | Query scratch space | 7 days |
 
 ---
@@ -72,23 +73,41 @@ Three visitors arrived from search engines. One Yahoo visitor ("cd player") brow
 ```
 .
 ├── src/
-│   ├── search_keyword_analyzer.py    # Core analyzer class
-│   └── lambda_handler.py             # AWS Lambda entry point
+│   ├── shared/
+│   │   ├── __init__.py
+│   │   ├── search_keyword_analyzer.py   # Core attribution logic
+│   │   └── base_handler.py              # Shared S3/KMS/PII utilities
+│   └── pipelines/
+│       └── adobe/
+│           ├── __init__.py
+│           └── handler.py               # Adobe Lambda entry point
 ├── tests/
-│   └── test_analyzer.py              # Unit tests
+│   └── test_analyzer.py                 # Unit tests (26 tests)
 ├── terraform/
-│   └── main.tf                       # All AWS infrastructure
+│   ├── main.tf                          # Provider + backend only
+│   ├── variables.tf                     # All variable declarations
+│   ├── shared.tf                        # S3, KMS, IAM, Glue DB, Athena
+│   ├── pipelines.tf                     # Module calls per pipeline
+│   ├── observability.tf                 # CloudWatch, Budgets, QuickSight
+│   ├── outputs.tf                       # All outputs
+│   └── modules/
+│       └── pipeline/                    # Reusable module template
+│           ├── main.tf                  # Lambda, IAM, EventBridge, Glue, Crawler
+│           ├── variables.tf
+│           └── outputs.tf
 ├── data/
-│   └── data.sql                      # Sample hit-level data
+│   └── data.sql                         # Sample hit-level data
 ├── .github/
 │   └── workflows/
-│       └── ci-cd.yml                 # GitHub Actions pipeline
-├── output/                           # Generated reports (gitignored)
-├── dist/                             # Lambda zip artifacts (gitignored)
+│       └── ci-cd.yml                    # GitHub Actions pipeline
+├── output/                              # Generated reports (gitignored)
+├── dist/                                # Lambda zip artifacts (gitignored)
 ├── README.md
-├── RUNBOOK.md                        # Full operational guide
-├── DEPLOYMENT.md                     # Quick deployment reference
-└── requirements.txt                  # No external dependencies
+├── ARCHITECTURE.md                      # Current architecture detail
+├── FUTURE_ARCHITECTURE.md               # Scaling roadmap
+├── RUNBOOK.md                           # Full operational guide
+├── DEPLOYMENT.md                        # Quick deployment reference
+└── requirements.txt                     # No external dependencies
 ```
 
 ---
@@ -98,11 +117,8 @@ Three visitors arrived from search engines. One Yahoo visitor ("cd player") brow
 ### Local (no AWS required)
 
 ```bash
-# Run analyzer
-python src/search_keyword_analyzer.py data/data.sql
-
 # Run tests
-python -m unittest tests.test_analyzer -v
+python3 -m unittest tests/test_analyzer.py -v
 ```
 
 ### AWS Deployment
@@ -122,7 +138,7 @@ Then trigger the pipeline:
 BUCKET=$(cd terraform && terraform output -raw s3_bucket)
 
 # Upload data file → triggers Lambda automatically
-aws s3 cp data/data.sql s3://$BUCKET/landing/data.sql
+aws s3 cp data/data.sql s3://$BUCKET/landing/adobe/data.sql
 
 # Wait ~20 seconds, then check output
 aws s3 ls s3://$BUCKET/gold/
@@ -145,7 +161,7 @@ Push / PR / Manual trigger
         │
         ▼
   ┌─────────────┐
-  │ Unit Tests  │  python -m unittest (no AWS needed)
+  │ Unit Tests  │  python3 -m unittest (no AWS needed)
   └──────┬──────┘
          │ pass
          ▼
@@ -183,18 +199,22 @@ gh pr create --title "My change" --body "Description"
 
 ## AWS Infrastructure
 
-All resources provisioned via Terraform (`terraform/main.tf`):
+Shared infrastructure lives in `terraform/shared.tf`. Per-pipeline resources are created by `terraform/modules/pipeline/` called from `terraform/pipelines.tf`.
 
 | Resource | Name | Purpose |
 |---|---|---|
-| S3 Bucket | `search-keyword-analyzer-dev-{account}` | Medallion data lake |
-| Lambda | `search-keyword-analyzer-dev` | Processing engine |
-| IAM Role | `search-keyword-analyzer-lambda-dev` | Least-privilege execution role |
-| KMS Key | `alias/search-keyword-analyzer-dev` | Encryption at rest (auto-rotates) |
-| Glue Database | `search_keyword_analyzer_dev` | Schema registry |
-| Glue Tables | `bronze_hits`, `gold_keyword_performance` | Athena queryable tables |
+| S3 Bucket | `search-keyword-analyzer-dev-{account}` | Shared medallion data lake |
+| Lambda | `search-keyword-analyzer-adobe-dev` | Adobe processing engine |
+| IAM Role (Lambda) | `search-keyword-analyzer-lambda-adobe-dev` | Least-privilege execution role |
+| IAM Role (Admin) | `search-keyword-analyzer-admin-dev` | Full PII access |
+| IAM Role (Developer) | `search-keyword-analyzer-developer-dev` | Masked bronze + gold access |
+| KMS Key | `alias/search-keyword-analyzer-dev` | Standard encryption (all layers) |
+| KMS Key | `alias/search-keyword-analyzer-pii-dev` | PII-only key (admin decrypt only) |
+| Glue Database | `stg_adobe` | Schema registry for all pipelines |
+| Glue Tables | `adobe_bronze_masked`, `adobe_bronze_raw`, `adobe_gold` | Athena queryable tables |
+| Glue Crawler | `search-keyword-analyzer-adobe-dev-schema` | Daily schema evolution |
 | Athena Workgroup | `search-keyword-analyzer-dev` | Query engine (100 MB scan limit) |
-| CloudWatch | `/aws/lambda/search-keyword-analyzer-dev` | Logs + error alarm |
+| CloudWatch | `/aws/lambda/search-keyword-analyzer-adobe-dev` | Logs + error alarm |
 
 ### Security & PII Protection
 
@@ -236,36 +256,57 @@ gold/           — no PII at all (engine / keyword / revenue only)
 
 ## Querying Results with Athena
 
-**Console:** AWS → Athena → Workgroup: `search-keyword-analyzer-dev` → Database: `search_keyword_analyzer_dev`
+**Console:** AWS → Athena → Workgroup: `search-keyword-analyzer-dev` → Database: `stg_adobe`
 
 ```sql
 -- Top keywords by revenue
-SELECT * FROM gold_keyword_performance ORDER BY revenue DESC;
+SELECT * FROM stg_adobe.adobe_gold ORDER BY revenue DESC;
 
--- Raw hit data
+-- Unique visitors by page (masked bronze — no real IPs)
 SELECT pagename, COUNT(*) AS hits
-FROM bronze_hits
+FROM stg_adobe.adobe_bronze_masked
 GROUP BY pagename ORDER BY hits DESC;
 
 -- Purchase events only
 SELECT date_time, ip, geo_city, product_list
-FROM bronze_hits
+FROM stg_adobe.adobe_bronze_masked
 WHERE event_list LIKE '%1%';
 ```
 
 **CLI:**
 ```bash
 aws athena start-query-execution \
-  --query-string "SELECT * FROM gold_keyword_performance ORDER BY revenue DESC" \
+  --query-string "SELECT * FROM stg_adobe.adobe_gold ORDER BY revenue DESC" \
   --work-group "search-keyword-analyzer-dev" \
-  --query-execution-context "Database=search_keyword_analyzer_dev"
+  --query-execution-context "Database=stg_adobe"
 ```
+
+---
+
+## Adding a New Pipeline
+
+The module in `terraform/modules/pipeline/` is reusable. To add Salesforce:
+
+1. Create `src/pipelines/salesforce/__init__.py` (empty)
+2. Create `src/pipelines/salesforce/handler.py` (copy adobe handler, update transformation logic)
+3. Add to `terraform/pipelines.tf`:
+```hcl
+module "salesforce_pipeline" {
+  source         = "./modules/pipeline"
+  source_name    = "salesforce"
+  lambda_handler = "pipelines.salesforce.handler.lambda_handler"
+  bronze_columns = [ ... ]
+  gold_columns   = [ ... ]
+  # all shared vars identical to adobe module call
+}
+```
+4. `terraform apply` — Lambda, Glue tables (`salesforce_bronze_masked`, `salesforce_bronze_raw`, `salesforce_gold`), EventBridge rule all created automatically.
 
 ---
 
 ## Scalability
 
-The current application streams the file row by row (`csv.DictReader`), so memory usage is O(unique visitors), not O(file size). This handles moderate files efficiently.
+The current application streams the file row by row (`csv.DictReader`), so memory usage is O(unique visitors), not O(file size).
 
 For **10 GB+ files**:
 
@@ -275,8 +316,6 @@ For **10 GB+ files**:
 | AWS Glue (PySpark) | 50+ GB, serverless | Managed Spark, auto-scaling, S3-native |
 | EMR | Very large recurring jobs | Full Spark cluster, maximum control |
 | Kinesis Streams | Real-time hits | Process as events arrive, no batching |
-
-Key bottlenecks at scale: single-threaded processing, in-memory visitor attribution dict (grows with unique IPs), Lambda 15-min timeout and 10 GB `/tmp` limit.
 
 ---
 
@@ -289,6 +328,8 @@ Key bottlenecks at scale: single-threaded processing, in-memory visitor attribut
 3. **Standard library only** — No pandas or external deps. Simplifies Lambda packaging and reduces cold start time.
 
 4. **Line-by-line streaming** — File is never fully loaded into memory. Foundation for future scale improvements.
+
+5. **Modular Terraform** — Each pipeline is an isolated module call. Shared infra (S3, KMS, IAM) lives in `shared.tf`. Adding a source requires no shared infrastructure changes.
 
 ---
 

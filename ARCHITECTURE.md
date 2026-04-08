@@ -1,6 +1,6 @@
 # Architecture — Search Keyword Performance Analyzer
 
-## Current State: Single-Source Pipeline (Adobe)
+## Current State: Modular Multi-Source Pipeline
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
@@ -15,7 +15,7 @@
 │                         AWS Account                                 │
 │                                                                     │
 │  ┌──────────────────────────────────────────────────────────────┐  │
-│  │  S3: search-keyword-analyzer-dev-{account}                   │  │
+│  │  S3: search-keyword-analyzer-stg-{account}                   │  │
 │  │                                                              │  │
 │  │  landing/adobe/     ◄─── aws s3 cp data.sql s3://.../       │  │
 │  │       │                                                      │  │
@@ -30,17 +30,17 @@
 │  └────────┬─────────┘                                              │
 │           │                                                         │
 │           ▼                                                         │
-│  ┌──────────────────────────────────────────────────────────┐      │
-│  │   Lambda: search-keyword-analyzer-adobe-dev              │      │
-│  │   Handler: adobe_handler.lambda_handler                  │      │
-│  │   Runtime: Python 3.12                                   │      │
-│  │                                                          │      │
-│  │   1. Download landing file to /tmp                       │      │
-│  │   2. Run SearchKeywordAnalyzer (attribution logic)       │      │
-│  │   3. Write gold/   ──► S3 (no PII, standard KMS key)    │      │
-│  │   4. Write bronze/raw/   ──► S3 (PII KMS key)           │      │
-│  │   5. Write bronze/masked/ ──► S3 (SHA-256 hash, std key)│      │
-│  └──────────────────────────────────────────────────────────┘      │
+│  ┌──────────────────────────────────────────────────────┐      │
+│  │   Lambda: search-keyword-analyzer-adobe-stg          │      │
+│  │   Handler: pipelines.adobe.handler.lambda_handler    │      │
+│  │   Runtime: Python 3.12                               │      │
+│  │                                                      │      │
+│  │   1. Download landing file to /tmp                   │      │
+│  │   2. Run SearchKeywordAnalyzer (attribution logic)   │      │
+│  │   3. Write gold/   ──► S3 (no PII, standard KMS key)│      │
+│  │   4. Write bronze/raw/   ──► S3 (PII KMS key)        │      │
+│  │   5. Write bronze/masked/ ──► S3 (SHA-256, std key)  │      │
+│  └──────────────────────────────────────────────────────┘      │
 │           │                                                         │
 │    ┌──────┼──────────────────────┐                                  │
 │    ▼      ▼                     ▼                                   │
@@ -53,7 +53,7 @@
 │  ┌──────────────────────────────────────────────┐                  │
 │  │  AWS Glue Data Catalog                       │                  │
 │  │                                              │                  │
-│  │  Database: search_keyword_analyzer_dev       │                  │
+│  │  Database: stg_adobe                         │                  │
 │  │  ├── adobe_gold          (gold layer)        │                  │
 │  │  ├── adobe_bronze_masked (dev accessible)    │                  │
 │  │  └── adobe_bronze_raw    (admin only)        │                  │
@@ -64,7 +64,7 @@
 │                     ▼                                               │
 │  ┌──────────────────────────────────┐                              │
 │  │  Athena Workgroup                │                              │
-│  │  search-keyword-analyzer-dev     │                              │
+│  │  search-keyword-analyzer-stg     │                              │
 │  │  Limit: 100 MB/query scan        │                              │
 │  └──────────────────────────────────┘                              │
 │                                                                     │
@@ -78,6 +78,49 @@
 │  └───────────────────────────────────────────────────────────────┘ │
 └─────────────────────────────────────────────────────────────────────┘
 ```
+
+---
+
+## Terraform Structure
+
+The monolithic `main.tf` is split by concern. Terraform merges all `.tf` files in the same directory — this is idiomatic Terraform for a single root module.
+
+```
+terraform/
+├── main.tf          ← provider + backend only (~30 lines)
+├── variables.tf     ← all variable declarations
+├── shared.tf        ← S3, KMS, IAM roles, Glue DB, Athena (shared by all pipelines)
+├── pipelines.tf     ← one module call per pipeline source
+├── observability.tf ← CloudWatch dashboard, Budgets, QuickSight
+├── outputs.tf       ← all output declarations
+└── modules/
+    └── pipeline/    ← reusable module: Lambda + IAM + EventBridge + Glue + Crawler
+        ├── main.tf
+        ├── variables.tf
+        └── outputs.tf
+```
+
+**Adding a new pipeline** = add one `module` block in `pipelines.tf` + create `src/pipelines/<source>/handler.py`. Nothing in shared infrastructure or the module changes.
+
+---
+
+## Python Package Structure
+
+```
+src/
+├── shared/                          ← reused by all pipelines
+│   ├── __init__.py
+│   ├── search_keyword_analyzer.py   ← attribution logic (parse_search_engine, parse_revenue, etc.)
+│   └── base_handler.py              ← S3/KMS utilities (archive_raw, archive_masked, hash_pii)
+└── pipelines/
+    ├── __init__.py
+    └── adobe/                       ← Adobe-specific handler (its own folder)
+        ├── __init__.py
+        └── handler.py               ← lambda_handler entry point
+```
+
+Lambda handler string: `pipelines.adobe.handler.lambda_handler`
+ZIP is built from `src/` as root → packages are importable via Python dot notation.
 
 ---
 
@@ -138,7 +181,7 @@ landing/            Read ✓           Read ✗            Read ✓
 
 | Layer | S3 Prefix | Contents | Retention | Access |
 |---|---|---|---|---|
-| Landing | `landing/` | Raw uploads (trigger zone) | 60 days → Glacier | Lambda only |
+| Landing | `landing/adobe/` | Raw uploads (trigger zone) | 60 days → Glacier | Lambda only |
 | Bronze Raw | `bronze/raw/` | Original data, plaintext PII | 1 year → Glacier | Admin only |
 | Bronze Masked | `bronze/masked/` | SHA-256 hashed ip/user_agent | 1 year → Glacier | Developer + Admin |
 | Gold | `gold/` | Aggregated output, no PII | 1 year | Everyone |
@@ -148,10 +191,27 @@ landing/            Read ✓           Read ✗            Read ✓
 
 ## Adding a New Data Source
 
-1. **Create the handler** — copy `src/adobe_handler.py` → `src/<source>_handler.py`, update transformation logic
-2. **Add Terraform module block** — copy the `module "adobe_pipeline"` block in `terraform/main.tf`, change `source_name`, `lambda_handler`, `bronze_columns`, `gold_columns`
-3. **Run CI** — push to a PR → CI runs `terraform apply` → new Lambda, Glue tables, EventBridge rule created automatically
-4. **Upload data** — `aws s3 cp <file> s3://<bucket>/landing/<source>/<file>`
+1. **Create the handler**
+   ```
+   src/pipelines/salesforce/__init__.py   (empty)
+   src/pipelines/salesforce/handler.py    (copy adobe handler, update transformation logic)
+   ```
+
+2. **Add Terraform module block** in `terraform/pipelines.tf`:
+   ```hcl
+   module "salesforce_pipeline" {
+     source         = "./modules/pipeline"
+     source_name    = "salesforce"
+     lambda_handler = "pipelines.salesforce.handler.lambda_handler"
+     bronze_columns = [ ... ]
+     gold_columns   = [ ... ]
+     # shared vars identical to adobe module call
+   }
+   ```
+
+3. **Run CI** — push to a PR → CI runs `terraform apply` → new Lambda, Glue tables (`salesforce_bronze_masked`, `salesforce_bronze_raw`, `salesforce_gold`), EventBridge rule created automatically
+
+4. **Upload data** — `aws s3 cp <file> s3://<bucket>/landing/salesforce/<file>`
 
 No shared infrastructure changes needed. Each source is fully isolated.
 
@@ -161,15 +221,17 @@ No shared infrastructure changes needed. Each source is fully isolated.
 
 | Resource | Name | Purpose |
 |---|---|---|
-| S3 Bucket | `search-keyword-analyzer-dev-{account}` | Shared medallion data lake |
-| KMS Key | `alias/search-keyword-analyzer-dev` | Standard encryption (all layers) |
-| KMS Key | `alias/search-keyword-analyzer-pii-dev` | PII-only key (admin decrypt) |
-| Lambda | `search-keyword-analyzer-adobe-dev` | Adobe pipeline processor |
-| EventBridge Rule | `…-adobe-…-landing-upload` | Routes S3 events to Lambda |
-| Glue Database | `search_keyword_analyzer_dev` | Schema registry |
+| S3 Bucket | `adobe-stg-{account}` | Shared medallion data lake |
+| KMS Key | `alias/adobe-stg` | Standard encryption (all layers) |
+| KMS Key | `alias/adobe-pii-stg` | PII-only key (admin decrypt) |
+| Lambda | `adobe-adobe-stg` | Adobe pipeline processor |
+| IAM Role | `adobe-lambda-adobe-stg` | Lambda execution (per pipeline) |
+| IAM Role | `adobe-admin-stg` | Admin access (full PII) |
+| IAM Role | `adobe-developer-stg` | Developer access (masked + gold) |
+| EventBridge Rule | `adobe-adobe-stg-landing-upload` | Routes S3 events to Lambda |
+| Glue Database | `stg_adobe` | Schema registry |
 | Glue Tables | `adobe_bronze_masked`, `adobe_bronze_raw`, `adobe_gold` | Athena queryable |
-| Glue Crawler | `…-adobe-…-schema` | Daily schema evolution |
-| Athena Workgroup | `search-keyword-analyzer-dev` | Query engine (100 MB scan limit) |
-| CloudWatch Dashboard | `search-keyword-analyzer-dev` | Ops metrics |
-| AWS Budgets | `search-keyword-analyzer-monthly-dev` | Cost alerts at $40/$50 |
-| IAM | `admin-role`, `developer-role`, `lambda-adobe-role` | RBAC |
+| Glue Crawler | `adobe-adobe-stg-schema` | Daily schema evolution |
+| Athena Workgroup | `adobe-stg` | Query engine (100 MB scan limit) |
+| CloudWatch Dashboard | `adobe-stg` | Ops metrics |
+| AWS Budgets | `adobe-monthly-stg` | Cost alerts at $40/$50 |

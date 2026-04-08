@@ -8,9 +8,9 @@ Reads the hit-level TSV, runs keyword attribution, and writes:
   - bronze/masked/     — SHA-256 hashed ip/user_agent, standard KMS key (developer accessible)
 
 To add a new data source:
-  1. Copy this file to src/<source>_handler.py
+  1. Copy this directory to src/pipelines/<source>/
   2. Replace SearchKeywordAnalyzer with your transformation class
-  3. Add a module block in terraform/main.tf (see the salesforce example comment)
+  3. Add a module block in terraform/pipelines.tf (see the salesforce example comment)
   4. terraform apply
 """
 
@@ -20,8 +20,8 @@ import os
 import boto3
 from urllib.parse import unquote_plus
 
-from search_keyword_analyzer import SearchKeywordAnalyzer
-from base_handler import archive_raw, archive_masked
+from shared.search_keyword_analyzer import SearchKeywordAnalyzer
+from shared.base_handler import archive_raw, archive_masked
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)

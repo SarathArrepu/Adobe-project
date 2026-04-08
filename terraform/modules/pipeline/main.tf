@@ -1,20 +1,22 @@
 # ---- Pipeline Module ----
 #
-# Creates one complete, isolated pipeline per data source.
+# Reusable module. Creates one complete, isolated pipeline per data source.
+# Shared infrastructure (S3, KMS, IAM admin/dev roles) lives in terraform/shared.tf.
+# Each pipeline is wired up in terraform/pipelines.tf by calling this module.
 #
 # To add a NEW source (e.g. Salesforce):
-#   1. Add src/salesforce_handler.py  (copy adobe_handler.py, update transformation logic)
-#   2. Add tests/test_salesforce_analyzer.py
-#   3. In terraform/main.tf, add:
+#   1. Create src/pipelines/salesforce/__init__.py  (empty)
+#   2. Create src/pipelines/salesforce/handler.py   (copy adobe handler, update transformation logic)
+#   3. In terraform/pipelines.tf, add:
 #        module "salesforce_pipeline" {
-#          source        = "./modules/pipeline"
-#          source_name   = "salesforce"
-#          lambda_handler = "salesforce_handler.lambda_handler"
+#          source         = "./modules/pipeline"
+#          source_name    = "salesforce"
+#          lambda_handler = "pipelines.salesforce.handler.lambda_handler"
 #          bronze_columns = [ ... salesforce schema ... ]
 #          gold_columns   = [ ... salesforce output schema ... ]
-#          # all other vars are identical to the adobe module call
+#          # all shared vars (s3, kms, iam, etc.) identical to adobe module call
 #        }
-#   4. terraform apply  →  new Lambda, Glue tables, EventBridge rule all created automatically.
+#   4. terraform apply  →  Lambda, Glue tables, EventBridge rule all created automatically.
 #
 # Resources created per source:
 #   - IAM role (Lambda execution, least-privilege)

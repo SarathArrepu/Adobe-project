@@ -1,35 +1,48 @@
 # Future Architecture — Scaling the Pipeline
 
-This document describes how the current single-source architecture evolves to handle more sources, larger data volumes, and richer orchestration. Each section is an independent enhancement — adopt in whatever order makes sense.
+This document describes how the current modular architecture evolves to handle more sources, larger data volumes, and richer orchestration. Each section is an independent enhancement — adopt in whatever order makes sense.
 
 ---
 
-## Phase 1 (Current) — Single Source, Event-Driven
+## Phase 1 (Current) — Modular Event-Driven Pipeline
 
 ```
+terraform/pipelines.tf
+  └── module "adobe_pipeline" { source = "./modules/pipeline" }
+
 S3 landing/adobe/
     │
     ▼  EventBridge rule
-Lambda (adobe_handler.py)
+Lambda (pipelines.adobe.handler.lambda_handler)
     │
     ├──► gold/           (Athena queryable, no PII)
     ├──► bronze/raw/     (admin only, PII encrypted)
     └──► bronze/masked/  (developer accessible, hashed PII)
+
+Glue Database: stg_adobe
+  ├── adobe_gold
+  ├── adobe_bronze_masked
+  └── adobe_bronze_raw
 ```
 
-**Suitable for:** Small files (<100 MB), single source, ad-hoc queries via Athena.
+**Suitable for:** Small files (<100 MB), ad-hoc queries via Athena.
 
 ---
 
 ## Phase 2 — Multi-Source (Next step, already supported)
 
-Just add a Terraform module block + Python handler per source. The template handles all infrastructure.
+Add a Terraform module block in `pipelines.tf` + a Python handler per source. The module template handles all infrastructure automatically.
 
 ```
+terraform/pipelines.tf
+  ├── module "adobe_pipeline"      { source = "./modules/pipeline", source_name = "adobe" }
+  ├── module "salesforce_pipeline" { source = "./modules/pipeline", source_name = "salesforce" }
+  └── module "marketo_pipeline"    { source = "./modules/pipeline", source_name = "marketo" }
+
 S3 landing/adobe/         S3 landing/salesforce/      S3 landing/marketo/
     │                          │                            │
     ▼ EventBridge rule         ▼ EventBridge rule           ▼ EventBridge rule
-Lambda (adobe_handler)    Lambda (salesforce_handler)  Lambda (marketo_handler)
+Lambda (adobe)            Lambda (salesforce)          Lambda (marketo)
     │                          │                            │
     └──────────────────────────┼────────────────────────────┘
                                ▼
@@ -37,21 +50,18 @@ Lambda (adobe_handler)    Lambda (salesforce_handler)  Lambda (marketo_handler)
               │    Shared S3 Data Lake         │
               │                                │
               │  gold/                         │
-              │  ├── adobe/                    │
-              │  ├── salesforce/               │
-              │  └── marketo/                  │
-              │                                │
               │  bronze/masked/                │
-              │  ├── adobe/                    │
-              │  └── salesforce/               │
+              │  bronze/raw/                   │
               └────────────────────────────────┘
                                │
               ┌────────────────────────────────┐
-              │  Glue Catalog                  │
+              │  Glue Database: stg_adobe      │
               │  ├── adobe_gold                │
               │  ├── adobe_bronze_masked       │
               │  ├── salesforce_gold           │
-              │  └── salesforce_bronze_masked  │
+              │  ├── salesforce_bronze_masked  │
+              │  ├── marketo_gold              │
+              │  └── marketo_bronze_masked     │
               └────────────────────────────────┘
                                │
                                ▼
@@ -59,13 +69,17 @@ Lambda (adobe_handler)    Lambda (salesforce_handler)  Lambda (marketo_handler)
 
 -- Example: join Adobe and Salesforce revenue
 SELECT a.search_keyword, a.revenue AS adobe_revenue, s.revenue AS crm_revenue
-FROM search_keyword_analyzer_dev.adobe_gold a
-JOIN search_keyword_analyzer_dev.salesforce_gold s
+FROM stg_adobe.adobe_gold a
+JOIN stg_adobe.salesforce_gold s
   ON a.search_keyword = s.campaign
 ORDER BY adobe_revenue DESC;
 ```
 
-**To add a source:** Copy `src/adobe_handler.py` → `src/salesforce_handler.py`, add module block in `terraform/main.tf`, push PR.
+**To add a source:**
+1. Create `src/pipelines/salesforce/__init__.py` (empty)
+2. Create `src/pipelines/salesforce/handler.py` (copy adobe handler, update transformation)
+3. Add `module "salesforce_pipeline"` block in `terraform/pipelines.tf`
+4. Push PR → CI → `terraform apply`
 
 ---
 
@@ -112,7 +126,7 @@ AWS Glue Job (PySpark)          ← same transformation logic, pandas-style API
     ├──► gold/           (Parquet, columnar — 10x query speed vs TSV)
     └──► bronze/masked/  (Parquet)
 
-Glue Catalog tables:
+Glue Catalog (stg_adobe):
     ├── adobe_gold          (format: Parquet, partitioned by ingestion_date)
     └── adobe_bronze_masked (format: Parquet)
 ```
@@ -154,7 +168,7 @@ Trigger: EventBridge → Step Functions state machine
 - Complex retry/fallback logic per step
 - Fan-out patterns (one input → multiple parallel transforms)
 
-**Terraform change:** Add back the Step Functions resources removed in Phase 2.
+**Terraform change:** Add Step Functions resources to `terraform/pipelines.tf` alongside the module call.
 
 ---
 
@@ -208,8 +222,8 @@ Validator Lambda
                  CloudWatch metric: DataQualityFailures
 ```
 
-**Terraform:** New Lambda + EventBridge rule; no changes to existing pipeline.
-**Python:** New `validate_handler.py` following the same template pattern.
+**Terraform:** New Lambda + EventBridge rule added in `terraform/pipelines.tf`; no changes to existing pipeline or shared infrastructure.
+**Python:** New `src/pipelines/adobe/validate_handler.py` following the same template pattern.
 
 ---
 
@@ -217,7 +231,7 @@ Validator Lambda
 
 | Scenario | Recommended Approach |
 |---|---|
-| New data source, same file format | Add module block + handler (Phase 2) |
+| New data source, same file format | Add module block in `pipelines.tf` + handler (Phase 2) |
 | File size 1–10 GB | Chunked Lambda (Phase 3A) |
 | File size 10+ GB, recurring | AWS Glue PySpark (Phase 3B) |
 | Multi-step pipeline with branching | Step Functions (Phase 4) |
