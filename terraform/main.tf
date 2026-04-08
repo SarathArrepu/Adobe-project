@@ -6,6 +6,16 @@ terraform {
       version = "~> 5.0"
     }
   }
+
+  # Remote state — shared across all CI runs and local developer machines.
+  # The state bucket is intentionally NOT managed by this config (bootstrap-only).
+  # To initialise: terraform init
+  # State bucket created once via: aws s3 mb s3://tfstate-search-keyword-analyzer-<account_id>
+  backend "s3" {
+    bucket = "tfstate-search-keyword-analyzer-107422471374"
+    key    = "search-keyword-analyzer/dev/terraform.tfstate"
+    region = "us-east-1"
+  }
 }
 
 provider "aws" {
@@ -31,6 +41,27 @@ variable "environment" {
 
 variable "project_name" {
   default = "search-keyword-analyzer"
+}
+
+variable "budget_alert_email" {
+  description = "Email address for monthly cost alerts (80% actual, 100% forecasted). Leave empty to skip budget creation."
+  default     = ""
+}
+
+variable "monthly_budget_usd" {
+  description = "Monthly cost budget threshold in USD"
+  default     = "50"
+}
+
+variable "enable_quicksight" {
+  description = "Provision QuickSight data source and dataset pointing to gold_keyword_performance via Athena. Requires a QuickSight Standard/Enterprise subscription in the account."
+  type        = bool
+  default     = false
+}
+
+variable "quicksight_username" {
+  description = "QuickSight IAM user name (not ARN) to grant read access. Required when enable_quicksight = true."
+  default     = ""
 }
 
 data "aws_caller_identity" "current" {}
@@ -327,8 +358,8 @@ resource "aws_iam_role_policy" "admin_glue_athena" {
     Statement = [
       {
         # Admin can query all tables including bronze_hits_raw (plaintext PII)
-        Effect   = "Allow"
-        Action   = ["glue:GetDatabase", "glue:GetDatabases", "glue:GetTable", "glue:GetTables", "glue:GetPartition", "glue:GetPartitions"]
+        Effect = "Allow"
+        Action = ["glue:GetDatabase", "glue:GetDatabases", "glue:GetTable", "glue:GetTables", "glue:GetPartition", "glue:GetPartitions"]
         Resource = [
           "arn:aws:glue:${var.aws_region}:${data.aws_caller_identity.current.account_id}:catalog",
           "arn:aws:glue:${var.aws_region}:${data.aws_caller_identity.current.account_id}:database/${replace("${var.project_name}_${var.environment}", "-", "_")}",
@@ -396,8 +427,8 @@ resource "aws_iam_role_policy" "developer_s3" {
       },
       {
         # Explicit IAM-level deny on raw PII data (defence-in-depth alongside S3 bucket policy)
-        Effect   = "Deny"
-        Action   = "s3:*"
+        Effect = "Deny"
+        Action = "s3:*"
         Resource = [
           "${aws_s3_bucket.data_lake.arn}/bronze/raw/*",
           "${aws_s3_bucket.data_lake.arn}/landing/*",
@@ -439,8 +470,8 @@ resource "aws_iam_role_policy" "developer_glue_athena" {
         ]
       },
       {
-        Effect = "Allow"
-        Action = ["athena:StartQueryExecution", "athena:GetQueryExecution", "athena:GetQueryResults", "athena:StopQueryExecution", "athena:GetWorkGroup"]
+        Effect   = "Allow"
+        Action   = ["athena:StartQueryExecution", "athena:GetQueryExecution", "athena:GetQueryResults", "athena:StopQueryExecution", "athena:GetWorkGroup"]
         Resource = ["arn:aws:athena:${var.aws_region}:${data.aws_caller_identity.current.account_id}:workgroup/${var.project_name}-${var.environment}"]
       },
     ]
@@ -471,31 +502,17 @@ resource "aws_lambda_function" "analyzer" {
     variables = {
       ENVIRONMENT     = var.environment
       LOG_LEVEL       = "INFO"
-      KMS_KEY_ARN     = aws_kms_key.data_key.arn     # Standard key for masked bronze / gold
-      PII_KMS_KEY_ARN = aws_kms_key.pii_key.arn      # PII key for raw bronze (encrypt only)
+      KMS_KEY_ARN     = aws_kms_key.data_key.arn # Standard key for masked bronze / gold
+      PII_KMS_KEY_ARN = aws_kms_key.pii_key.arn  # PII key for raw bronze (encrypt only)
     }
   }
 }
 
-resource "aws_lambda_permission" "s3_trigger" {
-  statement_id  = "AllowS3Invoke"
-  action        = "lambda:InvokeFunction"
-  function_name = aws_lambda_function.analyzer.function_name
-  principal     = "s3.amazonaws.com"
-  source_arn    = aws_s3_bucket.data_lake.arn
-}
+# Lambda is now invoked by Step Functions (not directly by S3).
+# EventBridge + Step Functions replaced the raw S3→Lambda trigger — see the
+# orchestration section below for aws_s3_bucket_notification and event rules.
 
-resource "aws_s3_bucket_notification" "landing_trigger" {
-  bucket = aws_s3_bucket.data_lake.id
-  lambda_function {
-    lambda_function_arn = aws_lambda_function.analyzer.arn
-    events              = ["s3:ObjectCreated:*"]
-    filter_prefix       = "landing/"
-  }
-  depends_on = [aws_lambda_permission.s3_trigger]
-}
-
-# ---- CloudWatch (monitoring) ----
+# ---- CloudWatch (monitoring + ops dashboard) ----
 
 resource "aws_cloudwatch_log_group" "lambda_logs" {
   name              = "/aws/lambda/${aws_lambda_function.analyzer.function_name}"
@@ -514,6 +531,180 @@ resource "aws_cloudwatch_metric_alarm" "lambda_errors" {
   alarm_description   = "Lambda processing errors detected"
   dimensions = {
     FunctionName = aws_lambda_function.analyzer.function_name
+  }
+}
+
+# Operations + cost-visibility dashboard.
+# Key cost drivers shown: Lambda duration ($/GB-second), Athena bytes scanned ($/TB),
+# Step Functions state transitions ($/1k transitions), KMS API calls ($/10k requests).
+resource "aws_cloudwatch_dashboard" "pipeline_ops" {
+  dashboard_name = "${var.project_name}-${var.environment}"
+
+  dashboard_body = jsonencode({
+    widgets = [
+      # ── Row 1: Lambda health ─────────────────────────────────────────────────
+      {
+        type   = "metric"
+        x      = 0
+        y      = 0
+        width  = 8
+        height = 6
+        properties = {
+          title  = "Lambda Invocations"
+          view   = "timeSeries"
+          period = 3600
+          stat   = "Sum"
+          metrics = [
+            ["AWS/Lambda", "Invocations", "FunctionName", aws_lambda_function.analyzer.function_name]
+          ]
+        }
+      },
+      {
+        type   = "metric"
+        x      = 8
+        y      = 0
+        width  = 8
+        height = 6
+        properties = {
+          title  = "Lambda Duration (ms) — drives cost"
+          view   = "timeSeries"
+          period = 3600
+          metrics = [
+            ["AWS/Lambda", "Duration", "FunctionName", aws_lambda_function.analyzer.function_name, { stat = "Average", label = "Avg" }],
+            ["AWS/Lambda", "Duration", "FunctionName", aws_lambda_function.analyzer.function_name, { stat = "p99", label = "p99" }],
+          ]
+        }
+      },
+      {
+        type   = "metric"
+        x      = 16
+        y      = 0
+        width  = 8
+        height = 6
+        properties = {
+          title  = "Lambda Errors & Throttles"
+          view   = "timeSeries"
+          period = 3600
+          metrics = [
+            ["AWS/Lambda", "Errors", "FunctionName", aws_lambda_function.analyzer.function_name, { stat = "Sum", color = "#d62728", label = "Errors" }],
+            ["AWS/Lambda", "Throttles", "FunctionName", aws_lambda_function.analyzer.function_name, { stat = "Sum", color = "#ff7f0e", label = "Throttles" }],
+          ]
+        }
+      },
+      # ── Row 2: Pipeline orchestration ────────────────────────────────────────
+      {
+        type   = "metric"
+        x      = 0
+        y      = 6
+        width  = 8
+        height = 6
+        properties = {
+          title  = "Step Functions Executions"
+          view   = "timeSeries"
+          period = 3600
+          metrics = [
+            ["AWS/States", "ExecutionsSucceeded", "StateMachineArn", aws_sfn_state_machine.pipeline.arn, { stat = "Sum", color = "#2ca02c", label = "Succeeded" }],
+            ["AWS/States", "ExecutionsFailed", "StateMachineArn", aws_sfn_state_machine.pipeline.arn, { stat = "Sum", color = "#d62728", label = "Failed" }],
+            ["AWS/States", "ExecutionsTimedOut", "StateMachineArn", aws_sfn_state_machine.pipeline.arn, { stat = "Sum", color = "#ff7f0e", label = "Timed Out" }],
+          ]
+        }
+      },
+      {
+        type   = "metric"
+        x      = 8
+        y      = 6
+        width  = 8
+        height = 6
+        properties = {
+          title  = "Step Functions Duration (ms)"
+          view   = "timeSeries"
+          period = 3600
+          metrics = [
+            ["AWS/States", "ExecutionTime", "StateMachineArn", aws_sfn_state_machine.pipeline.arn, { stat = "Average" }],
+          ]
+        }
+      },
+      # ── Row 3: Data & cost indicators ────────────────────────────────────────
+      {
+        type   = "metric"
+        x      = 0
+        y      = 12
+        width  = 8
+        height = 6
+        properties = {
+          title  = "Athena Data Scanned (bytes) — $5/TB"
+          view   = "timeSeries"
+          period = 86400
+          metrics = [
+            ["AWS/Athena", "DataScannedInBytes", "WorkGroup", aws_athena_workgroup.analytics.name, { stat = "Sum" }],
+          ]
+        }
+      },
+      {
+        type   = "metric"
+        x      = 8
+        y      = 12
+        width  = 8
+        height = 6
+        properties = {
+          title  = "KMS API Calls — $0.03/10k"
+          view   = "timeSeries"
+          period = 86400
+          metrics = [
+            ["AWS/KMS", "NumberOfRequestsSucceeded", "KeyId", aws_kms_key.data_key.key_id, { stat = "Sum", label = "data_key" }],
+            ["AWS/KMS", "NumberOfRequestsSucceeded", "KeyId", aws_kms_key.pii_key.key_id, { stat = "Sum", label = "pii_key" }],
+          ]
+        }
+      },
+      {
+        type   = "alarm"
+        x      = 16
+        y      = 12
+        width  = 8
+        height = 6
+        properties = {
+          title  = "Active Alarms"
+          alarms = [aws_cloudwatch_metric_alarm.lambda_errors.arn]
+        }
+      },
+    ]
+  })
+}
+
+# ---- AWS Budgets (cost guardrail) ----
+#
+# Sends email alerts when actual spend passes 80% and when *forecasted* spend
+# passes 100% of the monthly threshold. Uses Project tag for attribution.
+# Create by setting: budget_alert_email = "your@email.com" in terraform.tfvars
+
+resource "aws_budgets_budget" "monthly" {
+  count = var.budget_alert_email != "" ? 1 : 0
+
+  name         = "${var.project_name}-monthly-${var.environment}"
+  budget_type  = "COST"
+  limit_amount = var.monthly_budget_usd
+  limit_unit   = "USD"
+  time_unit    = "MONTHLY"
+
+  cost_filter {
+    name   = "TagKeyValue"
+    values = ["user:Project$search-keyword-analyzer"]
+  }
+
+  notification {
+    comparison_operator        = "GREATER_THAN"
+    threshold                  = 80
+    threshold_type             = "PERCENTAGE"
+    notification_type          = "ACTUAL"
+    subscriber_email_addresses = [var.budget_alert_email]
+  }
+
+  notification {
+    comparison_operator        = "GREATER_THAN"
+    threshold                  = 100
+    threshold_type             = "PERCENTAGE"
+    notification_type          = "FORECASTED"
+    subscriber_email_addresses = [var.budget_alert_email]
   }
 }
 
@@ -549,37 +740,51 @@ resource "aws_glue_data_catalog_encryption_settings" "catalog" {
 }
 
 # ---- Glue Catalog (schema registry for Athena) ----
+#
+# Tables are registered here as Apache Iceberg format.
+# Terraform creates the Glue schema entries; the actual Iceberg table metadata
+# (manifest files, snapshots, schema.json) is written by the first INSERT via Athena
+# or the Lambda using the Iceberg SDK. S3 prefix layout:
+#
+#   bronze/masked/        — Iceberg table root (data + metadata subfolders)
+#   bronze/raw/           — Iceberg table root (PII KMS key, admin only)
+#   gold/                 — Iceberg table root
+#
+# Why Iceberg over plain Hive external tables?
+#   - ACID transactions: concurrent Lambda writes don't corrupt the table
+#   - Schema evolution: add columns without re-writing all files
+#   - Time travel: query data as-of a past snapshot (audit, debugging)
+#   - Row-level deletes: GDPR right-to-be-forgotten — delete a visitor's rows
+#     by IP hash without rewriting entire partitions
+#   - Partition pruning on hidden partitions: no manual partition management
 
 resource "aws_glue_catalog_database" "analytics" {
   name = replace("${var.project_name}_${var.environment}", "-", "_")
 }
 
-# Bronze/masked table — pseudonymized hit-level data (ip and user_agent SHA-256 hashed)
-# Developer role has Glue access to this table. PII values are irreversible hashes.
+# Bronze/masked — Iceberg, pseudonymized PII, developer + admin access
 resource "aws_glue_catalog_table" "bronze_hits_masked" {
   name          = "bronze_hits_masked"
   database_name = aws_glue_catalog_database.analytics.name
 
   table_type = "EXTERNAL_TABLE"
+
+  open_table_format_input {
+    iceberg_input {
+      metadata_operation = "CREATE"
+      version            = "2"
+    }
+  }
+
   parameters = {
-    "classification"         = "csv"
-    "skip.header.line.count" = "1"
-    "pii_handling"           = "pseudonymized-sha256"
+    "table_type"        = "ICEBERG"
+    "pii_handling"      = "pseudonymized-sha256"
+    "format"            = "parquet"
+    "write_compression" = "snappy"
   }
 
   storage_descriptor {
-    location      = "s3://${aws_s3_bucket.data_lake.id}/bronze/masked/"
-    input_format  = "org.apache.hadoop.mapred.TextInputFormat"
-    output_format = "org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat"
-
-    ser_de_info {
-      serialization_library = "org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe"
-      parameters = {
-        "field.delim"            = "\t"
-        "serialization.format"   = "\t"
-        "skip.header.line.count" = "1"
-      }
-    }
+    location = "s3://${aws_s3_bucket.data_lake.id}/bronze/masked/"
 
     columns {
       name = "hit_time_gmt"
@@ -590,12 +795,14 @@ resource "aws_glue_catalog_table" "bronze_hits_masked" {
       type = "string"
     }
     columns {
-      name = "user_agent"
-      type = "string"
+      name    = "ip"
+      type    = "string"
+      comment = "PII-pseudonymized: sha256 hash of original IP address"
     }
     columns {
-      name = "ip"
-      type = "string"
+      name    = "user_agent"
+      type    = "string"
+      comment = "PII-pseudonymized: sha256 hash of original user agent string"
     }
     columns {
       name = "event_list"
@@ -629,54 +836,57 @@ resource "aws_glue_catalog_table" "bronze_hits_masked" {
       name = "referrer"
       type = "string"
     }
+    columns {
+      name    = "ingestion_date"
+      type    = "date"
+      comment = "Hidden partition column — date the record was ingested"
+    }
   }
 }
 
-# Bronze/raw table — original hit-level data with plaintext PII
-# Admin role ONLY. Developer role lacks kms:Decrypt on pii_key and has no Glue permission here.
+# Bronze/raw — Iceberg, plaintext PII, admin role ONLY
+# Objects encrypted with pii_key; developer role has no kms:Decrypt on that key.
 resource "aws_glue_catalog_table" "bronze_hits_raw" {
   name          = "bronze_hits_raw"
   database_name = aws_glue_catalog_database.analytics.name
 
   table_type = "EXTERNAL_TABLE"
+
+  open_table_format_input {
+    iceberg_input {
+      metadata_operation = "CREATE"
+      version            = "2"
+    }
+  }
+
   parameters = {
-    "classification"         = "csv"
-    "skip.header.line.count" = "1"
-    "pii_handling"           = "encrypted-at-rest-pii-kms-key"
-    "data_classification"    = "restricted-pii"
+    "table_type"          = "ICEBERG"
+    "data_classification" = "restricted-pii"
+    "pii_handling"        = "plaintext-pii-kms-encrypted"
+    "format"              = "parquet"
+    "write_compression"   = "snappy"
   }
 
   storage_descriptor {
-    location      = "s3://${aws_s3_bucket.data_lake.id}/bronze/raw/"
-    input_format  = "org.apache.hadoop.mapred.TextInputFormat"
-    output_format = "org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat"
-
-    ser_de_info {
-      serialization_library = "org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe"
-      parameters = {
-        "field.delim"            = "\t"
-        "serialization.format"   = "\t"
-        "skip.header.line.count" = "1"
-      }
-    }
+    location = "s3://${aws_s3_bucket.data_lake.id}/bronze/raw/"
 
     columns {
-      name    = "hit_time_gmt"
-      type    = "bigint"
+      name = "hit_time_gmt"
+      type = "bigint"
     }
     columns {
-      name    = "date_time"
-      type    = "string"
-    }
-    columns {
-      name    = "user_agent"
-      type    = "string"
-      comment = "PII: quasi-identifier — plaintext in raw layer, admin access only"
+      name = "date_time"
+      type = "string"
     }
     columns {
       name    = "ip"
       type    = "string"
-      comment = "PII: direct visitor identifier — plaintext in raw layer, admin access only"
+      comment = "PII: plaintext visitor IP — admin access only via pii_key KMS"
+    }
+    columns {
+      name    = "user_agent"
+      type    = "string"
+      comment = "PII: plaintext user agent — admin access only via pii_key KMS"
     }
     columns {
       name = "event_list"
@@ -710,33 +920,36 @@ resource "aws_glue_catalog_table" "bronze_hits_raw" {
       name = "referrer"
       type = "string"
     }
+    columns {
+      name    = "ingestion_date"
+      type    = "date"
+      comment = "Hidden partition column — date the record was ingested"
+    }
   }
 }
 
-# Gold table — aggregated keyword performance output
+# Gold — Iceberg, no PII, developer + admin access
 resource "aws_glue_catalog_table" "gold_keyword_performance" {
   name          = "gold_keyword_performance"
   database_name = aws_glue_catalog_database.analytics.name
 
   table_type = "EXTERNAL_TABLE"
+
+  open_table_format_input {
+    iceberg_input {
+      metadata_operation = "CREATE"
+      version            = "2"
+    }
+  }
+
   parameters = {
-    "classification"         = "csv"
-    "skip.header.line.count" = "1"
+    "table_type"        = "ICEBERG"
+    "format"            = "parquet"
+    "write_compression" = "snappy"
   }
 
   storage_descriptor {
-    location      = "s3://${aws_s3_bucket.data_lake.id}/gold/"
-    input_format  = "org.apache.hadoop.mapred.TextInputFormat"
-    output_format = "org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat"
-
-    ser_de_info {
-      serialization_library = "org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe"
-      parameters = {
-        "field.delim"            = "\t"
-        "serialization.format"   = "\t"
-        "skip.header.line.count" = "1"
-      }
-    }
+    location = "s3://${aws_s3_bucket.data_lake.id}/gold/"
 
     columns {
       name = "search_engine_domain"
@@ -750,6 +963,342 @@ resource "aws_glue_catalog_table" "gold_keyword_performance" {
       name = "revenue"
       type = "double"
     }
+  }
+}
+
+# ---- Step Functions (orchestration) ----
+#
+# Replaces the raw S3→Lambda fire-and-forget trigger with a managed state machine.
+# The S3 event now triggers Step Functions via EventBridge; Lambda is invoked as
+# a task inside the workflow rather than directly, enabling:
+#   - Retries with exponential back-off per step
+#   - Timeout enforcement
+#   - Failure notifications (SNS/CloudWatch)
+#   - Extensibility: add Glue job, data quality check, or notification steps
+#
+# Orchestration flow:
+#   S3 ObjectCreated (landing/)
+#     └─► EventBridge Rule
+#           └─► Step Functions state machine
+#                 ├─ ProcessFile (Lambda, up to 3 retries)
+#                 └─ on failure → CloudWatch alarm triggers
+
+resource "aws_iam_role" "step_functions_role" {
+  name = "${var.project_name}-sfn-${var.environment}"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Action    = "sts:AssumeRole"
+      Effect    = "Allow"
+      Principal = { Service = "states.amazonaws.com" }
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "step_functions_invoke_lambda" {
+  name = "invoke-lambda"
+  role = aws_iam_role.step_functions_role.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = "lambda:InvokeFunction"
+      Resource = aws_lambda_function.analyzer.arn
+    }]
+  })
+}
+
+resource "aws_sfn_state_machine" "pipeline" {
+  name     = "${var.project_name}-${var.environment}"
+  role_arn = aws_iam_role.step_functions_role.arn
+
+  definition = jsonencode({
+    Comment = "Search Keyword Analyzer pipeline — processes S3 landing file through Lambda"
+    StartAt = "ProcessFile"
+    States = {
+      ProcessFile = {
+        Type     = "Task"
+        Resource = aws_lambda_function.analyzer.arn
+        Retry = [{
+          ErrorEquals     = ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException", "States.TaskFailed"]
+          IntervalSeconds = 5
+          MaxAttempts     = 3
+          BackoffRate     = 2
+        }]
+        Catch = [{
+          ErrorEquals = ["States.ALL"]
+          Next        = "PipelineFailed"
+        }]
+        End = true
+      }
+      PipelineFailed = {
+        Type  = "Fail"
+        Error = "PipelineError"
+        Cause = "Lambda processing failed after retries — check CloudWatch logs"
+      }
+    }
+  })
+}
+
+# EventBridge rule: S3 landing/ uploads → Step Functions (replaces direct S3→Lambda trigger)
+# Note: S3 must have EventBridge notifications enabled; the bucket notification resource
+# below switches from Lambda to EventBridge as the delivery target.
+
+resource "aws_iam_role" "eventbridge_role" {
+  name = "${var.project_name}-eb-${var.environment}"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Action    = "sts:AssumeRole"
+      Effect    = "Allow"
+      Principal = { Service = "events.amazonaws.com" }
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "eventbridge_start_sfn" {
+  name = "start-step-functions"
+  role = aws_iam_role.eventbridge_role.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = "states:StartExecution"
+      Resource = aws_sfn_state_machine.pipeline.arn
+    }]
+  })
+}
+
+resource "aws_cloudwatch_event_rule" "s3_landing_upload" {
+  name        = "${var.project_name}-landing-upload-${var.environment}"
+  description = "Fires when a file is uploaded to the landing/ prefix"
+  event_pattern = jsonencode({
+    source      = ["aws.s3"]
+    detail-type = ["Object Created"]
+    detail = {
+      bucket = { name = [aws_s3_bucket.data_lake.id] }
+      object = { key = [{ prefix = "landing/" }] }
+    }
+  })
+}
+
+resource "aws_cloudwatch_event_target" "trigger_pipeline" {
+  rule     = aws_cloudwatch_event_rule.s3_landing_upload.name
+  arn      = aws_sfn_state_machine.pipeline.arn
+  role_arn = aws_iam_role.eventbridge_role.arn
+
+  # Pass the S3 event detail directly as the state machine input
+  input_transformer {
+    input_paths = {
+      bucket = "$.detail.bucket.name"
+      key    = "$.detail.object.key"
+    }
+    input_template = <<-EOT
+      {
+        "Records": [{
+          "s3": {
+            "bucket": { "name": "<bucket>" },
+            "object": { "key": "<key>" }
+          }
+        }]
+      }
+    EOT
+  }
+}
+
+# Enable EventBridge notifications on the S3 bucket (required for the rule above)
+resource "aws_s3_bucket_notification" "landing_trigger" {
+  bucket      = aws_s3_bucket.data_lake.id
+  eventbridge = true
+}
+
+# ---- Glue Crawler (schema evolution) ----
+#
+# The aws_glue_catalog_table blocks above define the initial schema.
+# As the source adds columns (or new S3 prefixes appear), the crawler auto-detects
+# changes and updates the Glue Catalog without requiring a Terraform change.
+#
+# Policy:  UPDATE_IN_DATABASE — new columns are merged into existing tables.
+#          LOG (delete) — removed columns are logged, not dropped, avoiding
+#          accidental schema loss from a transient empty S3 partition.
+#
+# Scope: crawler intentionally excludes bronze/raw/ (PII key — crawler role
+# only has access to the standard data key).
+
+resource "aws_iam_role" "glue_crawler_role" {
+  name = "${var.project_name}-crawler-${var.environment}"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Action    = "sts:AssumeRole"
+      Effect    = "Allow"
+      Principal = { Service = "glue.amazonaws.com" }
+    }]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "glue_service" {
+  role       = aws_iam_role.glue_crawler_role.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSGlueServiceRole"
+}
+
+resource "aws_iam_role_policy" "glue_crawler_s3" {
+  name = "s3-schema-discovery"
+  role = aws_iam_role.glue_crawler_role.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        # Read access to developer-accessible prefixes only (not bronze/raw/)
+        Effect = "Allow"
+        Action = ["s3:GetObject", "s3:ListBucket"]
+        Resource = [
+          aws_s3_bucket.data_lake.arn,
+          "${aws_s3_bucket.data_lake.arn}/bronze/masked/*",
+          "${aws_s3_bucket.data_lake.arn}/gold/*",
+        ]
+      },
+      {
+        # Standard data key — decrypt masked and gold files for schema inference
+        Effect   = "Allow"
+        Action   = ["kms:Decrypt", "kms:GenerateDataKey", "kms:DescribeKey"]
+        Resource = aws_kms_key.data_key.arn
+      },
+    ]
+  })
+}
+
+resource "aws_glue_crawler" "schema_discovery" {
+  name          = "${var.project_name}-${var.environment}"
+  role          = aws_iam_role.glue_crawler_role.arn
+  database_name = aws_glue_catalog_database.analytics.name
+
+  # Run daily at 2am UTC — outside business hours, after overnight ingestion
+  schedule = "cron(0 2 * * ? *)"
+
+  # Crawl only developer-accessible layers. bronze/raw/ is excluded:
+  # (a) the crawler role cannot decrypt the PII key, (b) schema is identical to masked.
+  s3_target {
+    path = "s3://${aws_s3_bucket.data_lake.id}/bronze/masked/"
+    # Exclude Iceberg metadata files — only Parquet data files contain schema
+    exclusions = ["metadata/**", "**.json", "**.avro"]
+  }
+
+  s3_target {
+    path       = "s3://${aws_s3_bucket.data_lake.id}/gold/"
+    exclusions = ["metadata/**", "**.json", "**.avro"]
+  }
+
+  schema_change_policy {
+    # Merge new columns into existing tables — handles source schema additions
+    update_behavior = "UPDATE_IN_DATABASE"
+    # Log removed columns rather than dropping them — prevents data loss on empty partitions
+    delete_behavior = "LOG"
+  }
+
+  configuration = jsonencode({
+    Version = 1.0
+    CrawlerOutput = {
+      Partitions = { AddOrUpdateBehavior = "InheritFromTable" }
+      Tables     = { AddOrUpdateBehavior = "MergeNewColumns" }
+    }
+    # Group files by S3 prefix into one table per prefix (not one per file)
+    Grouping = {
+      TableGroupingPolicy = "CombineCompatibleSchemas"
+    }
+  })
+}
+
+# ---- QuickSight (visualization) ----
+#
+# Connects QuickSight directly to the Athena workgroup and gold_keyword_performance
+# table, enabling filters by engine, keyword, and date without any exports.
+#
+# Prerequisites (one-time manual steps, NOT managed by Terraform):
+#   1. Subscribe to QuickSight Standard/Enterprise in the AWS console
+#   2. Grant QuickSight IAM permissions to access Athena + S3
+#      (QuickSight console → Manage QuickSight → Security & permissions)
+#   3. Set variables: enable_quicksight = true, quicksight_username = "your-iam-username"
+#
+# DIRECT_QUERY mode: queries execute live against Athena — no SPICE ingestion cost.
+# Data is always current without refresh scheduling.
+
+resource "aws_quicksight_data_source" "athena" {
+  count = var.enable_quicksight ? 1 : 0
+
+  aws_account_id = data.aws_caller_identity.current.account_id
+  data_source_id = "${var.project_name}-${var.environment}"
+  name           = "Search Keyword Analyzer (${var.environment})"
+  type           = "ATHENA"
+
+  parameters {
+    athena {
+      work_group = aws_athena_workgroup.analytics.name
+    }
+  }
+
+  permission {
+    actions = [
+      "quicksight:DescribeDataSource",
+      "quicksight:DescribeDataSourcePermissions",
+      "quicksight:PassDataSource",
+      "quicksight:UpdateDataSource",
+      "quicksight:DeleteDataSource",
+      "quicksight:UpdateDataSourcePermissions",
+    ]
+    principal = "arn:aws:quicksight:${var.aws_region}:${data.aws_caller_identity.current.account_id}:user/default/${var.quicksight_username}"
+  }
+}
+
+# Gold layer dataset — revenue by search engine and keyword.
+# DIRECT_QUERY: no SPICE cost, always reflects latest Lambda output.
+# Add a date range filter in QuickSight UI to slice by ingestion_date.
+resource "aws_quicksight_data_set" "gold_performance" {
+  count = var.enable_quicksight ? 1 : 0
+
+  aws_account_id = data.aws_caller_identity.current.account_id
+  data_set_id    = "${var.project_name}-gold-${var.environment}"
+  name           = "Gold: Keyword Performance (${var.environment})"
+  import_mode    = "DIRECT_QUERY"
+
+  physical_table_map {
+    physical_table_map_id = "gold_keyword_performance"
+
+    relational_table {
+      data_source_arn = aws_quicksight_data_source.athena[0].arn
+      catalog         = "AWSDataCatalog"
+      schema          = aws_glue_catalog_database.analytics.name
+      name            = "gold_keyword_performance"
+
+      input_columns {
+        name = "search_engine_domain"
+        type = "STRING"
+      }
+      input_columns {
+        name = "search_keyword"
+        type = "STRING"
+      }
+      input_columns {
+        name = "revenue"
+        type = "DECIMAL"
+      }
+    }
+  }
+
+  permissions {
+    actions = [
+      "quicksight:DescribeDataSet",
+      "quicksight:DescribeDataSetPermissions",
+      "quicksight:PassDataSet",
+      "quicksight:DescribeIngestion",
+      "quicksight:ListIngestions",
+      "quicksight:UpdateDataSet",
+      "quicksight:DeleteDataSet",
+      "quicksight:CreateIngestion",
+      "quicksight:CancelIngestion",
+      "quicksight:UpdateDataSetPermissions",
+    ]
+    principal = "arn:aws:quicksight:${var.aws_region}:${data.aws_caller_identity.current.account_id}:user/default/${var.quicksight_username}"
   }
 }
 
@@ -789,4 +1338,45 @@ output "developer_role_arn" {
 output "pii_kms_key_arn" {
   description = "PII KMS key — admin role can decrypt, Lambda can encrypt, developers have no access"
   value       = aws_kms_key.pii_key.arn
+}
+
+output "state_machine_arn" {
+  description = "Step Functions pipeline — triggered by S3 landing/ uploads via EventBridge"
+  value       = aws_sfn_state_machine.pipeline.arn
+}
+
+output "cloudwatch_dashboard_url" {
+  description = "Operations dashboard — Lambda health, Step Functions, Athena scan cost, KMS API calls"
+  value       = "https://${var.aws_region}.console.aws.amazon.com/cloudwatch/home?region=${var.aws_region}#dashboards:name=${aws_cloudwatch_dashboard.pipeline_ops.dashboard_name}"
+}
+
+output "budget_status" {
+  description = "Monthly cost budget (set budget_alert_email variable to activate)"
+  value       = length(aws_budgets_budget.monthly) > 0 ? "Active — alerts at 80% actual and 100% forecasted of $${var.monthly_budget_usd}/mo → ${var.budget_alert_email}" : "Not created — set budget_alert_email in terraform.tfvars to enable"
+}
+
+output "quicksight_dataset_arn" {
+  description = "QuickSight dataset ARN for gold_keyword_performance (requires enable_quicksight=true)"
+  value       = var.enable_quicksight ? aws_quicksight_data_set.gold_performance[0].arn : "QuickSight disabled — set enable_quicksight=true and quicksight_username in terraform.tfvars"
+}
+
+output "glue_crawler_name" {
+  description = "Glue Crawler for automatic schema evolution — runs daily at 2am UTC"
+  value       = aws_glue_crawler.schema_discovery.name
+}
+
+output "iceberg_table_init_sql" {
+  description = "Run these in Athena after first deploy to initialize Iceberg table metadata"
+  value       = <<-EOT
+    -- Run once in Athena workgroup: ${aws_athena_workgroup.analytics.name}
+    -- Database: ${aws_glue_catalog_database.analytics.name}
+
+    CREATE TABLE IF NOT EXISTS ${aws_glue_catalog_database.analytics.name}.bronze_hits_masked
+    WITH (table_type='ICEBERG', location='s3://${aws_s3_bucket.data_lake.id}/bronze/masked/', format='PARQUET', write_compression='SNAPPY', partitioning=ARRAY['day(ingestion_date)'])
+    AS SELECT * FROM ${aws_glue_catalog_database.analytics.name}.bronze_hits_masked WHERE 1=0;
+
+    CREATE TABLE IF NOT EXISTS ${aws_glue_catalog_database.analytics.name}.gold_keyword_performance
+    WITH (table_type='ICEBERG', location='s3://${aws_s3_bucket.data_lake.id}/gold/', format='PARQUET', write_compression='SNAPPY')
+    AS SELECT * FROM ${aws_glue_catalog_database.analytics.name}.gold_keyword_performance WHERE 1=0;
+  EOT
 }
