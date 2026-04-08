@@ -768,29 +768,33 @@ resource "aws_glue_catalog_database" "analytics" {
   name = replace("${var.project_name}_${var.environment}", "-", "_")
 }
 
-# Bronze/masked — Iceberg, pseudonymized PII, developer + admin access
+# Bronze/masked — Hive external table, TSV, pseudonymized PII (developer + admin access)
+# Lambda writes tab-separated files with a header row to bronze/masked/.
+# Columns are positional (LazySimpleSerDe ignores the header; Athena maps by position).
 resource "aws_glue_catalog_table" "bronze_hits_masked" {
   name          = "bronze_hits_masked"
   database_name = aws_glue_catalog_database.analytics.name
-
-  table_type = "EXTERNAL_TABLE"
-
-  open_table_format_input {
-    iceberg_input {
-      metadata_operation = "CREATE"
-      version            = "2"
-    }
-  }
+  table_type    = "EXTERNAL_TABLE"
 
   parameters = {
-    "table_type"        = "ICEBERG"
-    "pii_handling"      = "pseudonymized-sha256"
-    "format"            = "parquet"
-    "write_compression" = "snappy"
+    "EXTERNAL"       = "TRUE"
+    "pii_handling"   = "pseudonymized-sha256"
+    "classification" = "tsv"
   }
 
   storage_descriptor {
-    location = "s3://${aws_s3_bucket.data_lake.id}/bronze/masked/"
+    location      = "s3://${aws_s3_bucket.data_lake.id}/bronze/masked/"
+    input_format  = "org.apache.hadoop.mapred.TextInputFormat"
+    output_format = "org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat"
+
+    ser_de_info {
+      serialization_library = "org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe"
+      parameters = {
+        "field.delim"            = "\t"
+        "serialization.format"   = "\t"
+        "skip.header.line.count" = "1"
+      }
+    }
 
     columns {
       name = "hit_time_gmt"
@@ -842,39 +846,36 @@ resource "aws_glue_catalog_table" "bronze_hits_masked" {
       name = "referrer"
       type = "string"
     }
-    columns {
-      name    = "ingestion_date"
-      type    = "date"
-      comment = "Hidden partition column — date the record was ingested"
-    }
   }
 }
 
-# Bronze/raw — Iceberg, plaintext PII, admin role ONLY
+# Bronze/raw — Hive external table, TSV, plaintext PII (admin role ONLY)
 # Objects encrypted with pii_key; developer role has no kms:Decrypt on that key.
 resource "aws_glue_catalog_table" "bronze_hits_raw" {
   name          = "bronze_hits_raw"
   database_name = aws_glue_catalog_database.analytics.name
-
-  table_type = "EXTERNAL_TABLE"
-
-  open_table_format_input {
-    iceberg_input {
-      metadata_operation = "CREATE"
-      version            = "2"
-    }
-  }
+  table_type    = "EXTERNAL_TABLE"
 
   parameters = {
-    "table_type"          = "ICEBERG"
+    "EXTERNAL"            = "TRUE"
     "data_classification" = "restricted-pii"
     "pii_handling"        = "plaintext-pii-kms-encrypted"
-    "format"              = "parquet"
-    "write_compression"   = "snappy"
+    "classification"      = "tsv"
   }
 
   storage_descriptor {
-    location = "s3://${aws_s3_bucket.data_lake.id}/bronze/raw/"
+    location      = "s3://${aws_s3_bucket.data_lake.id}/bronze/raw/"
+    input_format  = "org.apache.hadoop.mapred.TextInputFormat"
+    output_format = "org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat"
+
+    ser_de_info {
+      serialization_library = "org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe"
+      parameters = {
+        "field.delim"            = "\t"
+        "serialization.format"   = "\t"
+        "skip.header.line.count" = "1"
+      }
+    }
 
     columns {
       name = "hit_time_gmt"
@@ -926,36 +927,35 @@ resource "aws_glue_catalog_table" "bronze_hits_raw" {
       name = "referrer"
       type = "string"
     }
-    columns {
-      name    = "ingestion_date"
-      type    = "date"
-      comment = "Hidden partition column — date the record was ingested"
-    }
   }
 }
 
-# Gold — Iceberg, no PII, developer + admin access
+# Gold — Hive external table, TSV, no PII (developer + admin access)
+# Lambda writes: "Search Engine Domain\tSearch Keyword\tRevenue" (with header).
+# Columns are positional — Athena maps col 1→search_engine_domain, etc.
 resource "aws_glue_catalog_table" "gold_keyword_performance" {
   name          = "gold_keyword_performance"
   database_name = aws_glue_catalog_database.analytics.name
-
-  table_type = "EXTERNAL_TABLE"
-
-  open_table_format_input {
-    iceberg_input {
-      metadata_operation = "CREATE"
-      version            = "2"
-    }
-  }
+  table_type    = "EXTERNAL_TABLE"
 
   parameters = {
-    "table_type"        = "ICEBERG"
-    "format"            = "parquet"
-    "write_compression" = "snappy"
+    "EXTERNAL"       = "TRUE"
+    "classification" = "tsv"
   }
 
   storage_descriptor {
-    location = "s3://${aws_s3_bucket.data_lake.id}/gold/"
+    location      = "s3://${aws_s3_bucket.data_lake.id}/gold/"
+    input_format  = "org.apache.hadoop.mapred.TextInputFormat"
+    output_format = "org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat"
+
+    ser_de_info {
+      serialization_library = "org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe"
+      parameters = {
+        "field.delim"            = "\t"
+        "serialization.format"   = "\t"
+        "skip.header.line.count" = "1"
+      }
+    }
 
     columns {
       name = "search_engine_domain"
@@ -1371,18 +1371,25 @@ output "glue_crawler_name" {
   value       = aws_glue_crawler.schema_discovery.name
 }
 
-output "iceberg_table_init_sql" {
-  description = "Run these in Athena after first deploy to initialize Iceberg table metadata"
+output "sample_athena_queries" {
+  description = "Ready-to-run Athena queries against the Hive external tables"
   value       = <<-EOT
-    -- Run once in Athena workgroup: ${aws_athena_workgroup.analytics.name}
-    -- Database: ${aws_glue_catalog_database.analytics.name}
+    -- Workgroup: ${aws_athena_workgroup.analytics.name}
+    -- Database:  ${aws_glue_catalog_database.analytics.name}
 
-    CREATE TABLE IF NOT EXISTS ${aws_glue_catalog_database.analytics.name}.bronze_hits_masked
-    WITH (table_type='ICEBERG', location='s3://${aws_s3_bucket.data_lake.id}/bronze/masked/', format='PARQUET', write_compression='SNAPPY', partitioning=ARRAY['day(ingestion_date)'])
-    AS SELECT * FROM ${aws_glue_catalog_database.analytics.name}.bronze_hits_masked WHERE 1=0;
+    -- Top keywords by revenue (gold layer)
+    SELECT search_engine_domain, search_keyword, revenue
+    FROM ${aws_glue_catalog_database.analytics.name}.gold_keyword_performance
+    ORDER BY revenue DESC;
 
-    CREATE TABLE IF NOT EXISTS ${aws_glue_catalog_database.analytics.name}.gold_keyword_performance
-    WITH (table_type='ICEBERG', location='s3://${aws_s3_bucket.data_lake.id}/gold/', format='PARQUET', write_compression='SNAPPY')
-    AS SELECT * FROM ${aws_glue_catalog_database.analytics.name}.gold_keyword_performance WHERE 1=0;
+    -- Hit counts by page (masked bronze — developer accessible)
+    SELECT pagename, COUNT(*) AS hits
+    FROM ${aws_glue_catalog_database.analytics.name}.bronze_hits_masked
+    GROUP BY pagename ORDER BY hits DESC;
+
+    -- Purchase events with hashed IP (masked bronze)
+    SELECT date_time, ip, geo_city, product_list
+    FROM ${aws_glue_catalog_database.analytics.name}.bronze_hits_masked
+    WHERE event_list LIKE '%1%';
   EOT
 }
