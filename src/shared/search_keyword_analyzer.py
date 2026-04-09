@@ -349,7 +349,11 @@ class SearchKeywordAnalyzer:
         """
         Write the aggregated results to a tab-delimited ``.tab`` file.
 
-        File naming convention: ``YYYY-MM-DD_SearchKeywordPerformance.tab``
+        File naming convention: ``YYYY-MM-DDThh-mm-ss_SearchKeywordPerformance.tab``
+
+        The datetime (UTC) makes filenames unique even when multiple files land
+        on the same day, and maps directly to the ``dt=YYYY-MM-DD`` partition in
+        the Gold layer S3 path.
 
         Args:
             output_dir: Directory to create the output file in.
@@ -360,8 +364,10 @@ class SearchKeywordAnalyzer:
         """
         os.makedirs(output_dir, exist_ok=True)  # create output directory if missing
 
-        date_str = datetime.now().strftime("%Y-%m-%d")         # today's date for filename
-        filename = f"{date_str}_SearchKeywordPerformance.tab"  # standard output filename
+        # Use datetime (not date) so multiple files arriving the same day are unique.
+        # Format: 2026-04-08T14-30-00 — colons replaced with hyphens for S3/filesystem safety.
+        dt_str   = datetime.utcnow().strftime("%Y-%m-%dT%H-%M-%S")        # UTC arrival datetime
+        filename = f"{dt_str}_SearchKeywordPerformance.tab"               # unique per invocation
         output_path = os.path.join(output_dir, filename)       # full path including directory
 
         results = self.get_results()  # fetch sorted results before opening the file
