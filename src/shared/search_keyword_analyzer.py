@@ -17,6 +17,8 @@ from urllib.parse import urlparse, parse_qs, unquote
 from collections import defaultdict
 from typing import Optional, Tuple, Dict, List
 
+from shared.dq_checker import DataQualityChecker
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -169,14 +171,44 @@ class SearchKeywordAnalyzer:
         events = [e.strip() for e in event_list.split(",")]
         return self.PURCHASE_EVENT in events
 
-    def process(self) -> None:
+    def run_dq_checks(self, fail_on_error: bool = True) -> "DQReport":  # noqa: F821
+        """
+        Run data quality checks on the input file.
+
+        Args:
+            fail_on_error: If True, raises ValueError when ERROR-level issues are found.
+
+        Returns:
+            DQReport with full details of all issues found.
+
+        Raises:
+            ValueError: If fail_on_error=True and ERROR-level issues exist.
+        """
+        checker = DataQualityChecker(self.input_file)
+        report = checker.run()
+        report.print_summary()
+        if fail_on_error and not report.passed():
+            raise ValueError(
+                f"DQ checks failed for {self.input_file}: "
+                f"{len(report.errors)} error(s) — see log for details."
+            )
+        return report
+
+    def process(self, run_dq: bool = True) -> None:
         """
         Process the hit-level data file and build the revenue attribution.
 
         Reads the file line by line (memory-efficient for large files),
         tracks visitor search attribution by IP, and aggregates revenue
         for purchase events.
+
+        Args:
+            run_dq: If True (default), runs DQ checks before processing and
+                    raises ValueError on ERROR-level issues.
         """
+        if run_dq:
+            self.run_dq_checks(fail_on_error=True)
+
         logger.info(f"Processing file: {self.input_file}")
         row_count = 0
         purchase_count = 0
