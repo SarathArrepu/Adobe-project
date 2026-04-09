@@ -227,14 +227,30 @@ Push / PR / Manual trigger
 
 ### Developer Workflow
 
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the full git workflow rules and hook setup. Summary:
+
 ```bash
-git checkout main && git pull origin main
+# 1. Start from a fresh main
+git checkout main && git pull --rebase origin main
+
+# 2. Create a feature branch
 git checkout -b feature/my-change
-# ... make changes ...
+
+# 3. Stay in sync — run this regularly while working
+git fetch origin && git rebase origin/main
+
+# 4. Commit (pre-commit hook verifies you're not behind remote)
+git add <files> && git commit -m "feat: description"
+
+# 5. Push (pre-push hook checks for conflicts with main before allowing)
 git push -u origin feature/my-change
+
+# 6. Open PR
 gh pr create --title "My change" --body "Description"
 # After review + CI pass → merge via GitHub UI
 ```
+
+> **One-time hook setup per clone:** `git config core.hooksPath .githooks`
 
 ---
 
