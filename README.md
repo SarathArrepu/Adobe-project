@@ -262,18 +262,21 @@ Shared infrastructure lives in `terraform/shared.tf`. Per-pipeline resources are
 
 | Resource | Name | Purpose |
 |---|---|---|
-| S3 Bucket | `search-keyword-analyzer-dev-{account}` | Shared medallion data lake |
-| Lambda | `search-keyword-analyzer-adobe-dev` | Adobe processing engine |
-| IAM Role (Lambda) | `search-keyword-analyzer-lambda-adobe-dev` | Least-privilege execution role |
-| IAM Role (Admin) | `search-keyword-analyzer-admin-dev` | Full PII access |
-| IAM Role (Developer) | `search-keyword-analyzer-developer-dev` | Masked bronze + gold access |
-| KMS Key | `alias/search-keyword-analyzer-dev` | Standard encryption (all layers) |
-| KMS Key | `alias/search-keyword-analyzer-pii-dev` | PII-only key (admin decrypt only) |
+| S3 Bucket | `adobe-stg-{account}` | Shared medallion data lake |
+| Lambda | `adobe-adobe-stg` | Adobe processing engine |
+| IAM Role (Lambda) | `adobe-lambda-adobe-stg` | Least-privilege execution role |
+| IAM Role (Admin) | `adobe-admin-stg` | Full PII access |
+| IAM Role (Developer) | `adobe-developer-stg` | Masked bronze + gold access |
+| IAM Role (Crawler) | `adobe-crawler-adobe-stg` | Glue Crawler schema discovery |
+| KMS Key | `alias/adobe-stg` | Standard encryption (all layers) |
+| KMS Key | `alias/adobe-pii-stg` | PII-only key (admin decrypt only) |
 | Glue Database | `stg_adobe` | Schema registry for all pipelines |
 | Glue Tables | `adobe_bronze_masked`, `adobe_bronze_raw`, `adobe_gold` | Athena queryable tables |
-| Glue Crawler | `search-keyword-analyzer-adobe-dev-schema` | Daily schema evolution |
-| Athena Workgroup | `search-keyword-analyzer-dev` | Query engine (100 MB scan limit) |
-| CloudWatch | `/aws/lambda/search-keyword-analyzer-adobe-dev` | Logs + error alarm |
+| Glue Crawler | `adobe-adobe-stg-schema` | Daily schema evolution |
+| EventBridge Rule | `adobe-adobe-stg-landing-upload` | Routes S3 landing events to Lambda |
+| Athena Workgroup | `adobe-stg` | Query engine (100 MB scan limit) |
+| CloudWatch Log Group | `/aws/lambda/adobe-adobe-stg` | Logs + error alarm |
+| CloudWatch Dashboard | `adobe-stg` | Lambda/Athena/KMS ops metrics |
 
 ### Security & PII Protection
 
@@ -281,10 +284,10 @@ Shared infrastructure lives in `terraform/shared.tf`. Per-pipeline resources are
 
 | Layer | Mechanism | Key |
 |---|---|---|
-| S3 files (all layers) | SSE-KMS | `alias/search-keyword-analyzer-dev` |
-| `bronze/raw/` (PII data) | SSE-KMS with **dedicated PII key** | `alias/search-keyword-analyzer-pii-dev` |
-| Glue Data Catalog | SSE-KMS | `alias/search-keyword-analyzer-dev` |
-| Athena query results | SSE-KMS | `alias/search-keyword-analyzer-dev` |
+| S3 files (all layers) | SSE-KMS | `alias/adobe-stg` |
+| `bronze/raw/` (PII data) | SSE-KMS with **dedicated PII key** | `alias/adobe-pii-stg` |
+| Glue Data Catalog | SSE-KMS | `alias/adobe-stg` |
+| Athena query results | SSE-KMS | `alias/adobe-stg` |
 | KMS key rotation | Annual, automatic | Both keys |
 
 #### PII Handling
@@ -315,7 +318,7 @@ gold/           — no PII at all (engine / keyword / revenue only)
 
 ## Querying Results with Athena
 
-**Console:** AWS → Athena → Workgroup: `search-keyword-analyzer-dev` → Database: `stg_adobe`
+**Console:** AWS → Athena → Workgroup: `adobe-stg` → Database: `stg_adobe`
 
 ```sql
 -- Top keywords by revenue

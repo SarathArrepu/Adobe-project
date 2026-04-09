@@ -15,7 +15,7 @@
 │                         AWS Account                                 │
 │                                                                     │
 │  ┌──────────────────────────────────────────────────────────────┐  │
-│  │  S3: search-keyword-analyzer-stg-{account}                   │  │
+│  │  S3: adobe-stg-{account}                                     │  │
 │  │                                                              │  │
 │  │  landing/adobe/     ◄─── aws s3 cp data.sql s3://.../       │  │
 │  │       │                                                      │  │
@@ -31,7 +31,7 @@
 │           │                                                         │
 │           ▼                                                         │
 │  ┌──────────────────────────────────────────────────────┐      │
-│  │   Lambda: search-keyword-analyzer-adobe-stg          │      │
+│  │   Lambda: adobe-adobe-stg                            │      │
 │  │   Handler: pipelines.adobe.handler.lambda_handler    │      │
 │  │   Runtime: Python 3.12                               │      │
 │  │                                                      │      │
@@ -65,7 +65,7 @@
 │                     ▼                                               │
 │  ┌──────────────────────────────────┐                              │
 │  │  Athena Workgroup                │                              │
-│  │  search-keyword-analyzer-stg     │                              │
+│  │  adobe-stg                        │                              │
 │  │  Limit: 100 MB/query scan        │                              │
 │  └──────────────────────────────────┘                              │
 │                                                                     │

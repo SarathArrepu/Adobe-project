@@ -364,13 +364,13 @@ cd terraform && terraform apply
 
 ## 8. Adding a New Pipeline Source
 
-The pipeline module is reusable. Adding a new source (e.g. Salesforce) requires three steps only — no shared infrastructure changes needed.
+The pipeline module is reusable. Adding a new source requires three steps only — no shared infrastructure changes needed.
 
 ### Step 1 — Write the handler
 
 ```
-src/pipelines/salesforce/__init__.py    (empty — makes it a Python package)
-src/pipelines/salesforce/handler.py    (copy adobe handler, update transformation logic)
+src/pipelines/<source>/__init__.py    (empty — makes it a Python package)
+src/pipelines/<source>/handler.py    (copy adobe handler, update transformation logic)
 ```
 
 Key things to change in the handler:
@@ -381,24 +381,24 @@ Key things to change in the handler:
 ### Step 2 — Add module block to `terraform/pipelines.tf`
 
 ```hcl
-module "salesforce_pipeline" {
+module "<source>_pipeline" {
   source = "./modules/pipeline"
 
-  source_name    = "salesforce"
-  lambda_handler = "pipelines.salesforce.handler.lambda_handler"
+  source_name    = "<source>"
+  lambda_handler = "pipelines.<source>.handler.lambda_handler"
 
   bronze_columns = [
-    { name = "contact_id",  type = "string", comment = "" },
-    { name = "event_date",  type = "string", comment = "" },
-    { name = "revenue",     type = "double",  comment = "" },
-    # add your source-specific columns
-  ]
-  gold_columns = [
-    { name = "campaign", type = "string", comment = "" },
+    # define the TSV schema your Lambda writes to bronze/
+    { name = "field_1", type = "string", comment = "" },
     { name = "revenue",  type = "double",  comment = "" },
   ]
+  gold_columns = [
+    # define the TSV schema your Lambda writes to gold/
+    { name = "dimension", type = "string", comment = "" },
+    { name = "revenue",   type = "double",  comment = "" },
+  ]
 
-  # Shared infrastructure — identical for every pipeline
+  # Shared infrastructure — copy these vars unchanged from the adobe_pipeline block
   project_name          = var.project_name
   environment           = var.environment
   aws_region            = var.aws_region
@@ -422,22 +422,21 @@ module "salesforce_pipeline" {
 cd terraform && terraform apply
 ```
 
-This automatically creates:
-- Lambda function: `adobe-salesforce-stg`
-- IAM role: `adobe-lambda-salesforce-stg`
-- EventBridge rule: triggers on `landing/salesforce/` uploads
-- Glue tables: `salesforce_bronze_masked`, `salesforce_bronze_raw`, `salesforce_gold` in `stg_adobe`
-- Glue Crawler: `adobe-salesforce-stg-schema`
+This automatically creates (resource names follow the `{project}-{source}-{env}` pattern):
+- Lambda function: `adobe-<source>-stg`
+- IAM role: `adobe-lambda-<source>-stg`
+- EventBridge rule: triggers on `landing/<source>/` uploads
+- Glue tables: `<source>_bronze_masked`, `<source>_bronze_raw`, `<source>_gold` in `stg_adobe`
+- Glue Crawler: `adobe-<source>-stg-schema`
 - CloudWatch log group + error alarm
 
 ### Step 4 — Test manually
 
 ```bash
-aws lambda invoke \
-  --function-name adobe-salesforce-stg \
-  --payload file://tests/sample_salesforce_event.json \
-  --cli-binary-format raw-in-base64-out \
-  /tmp/response.json && cat /tmp/response.json
+BUCKET=$(cd terraform && terraform output -raw s3_bucket)
+aws s3 cp <your-test-file> s3://$BUCKET/landing/<source>/<filename>
+# Wait ~10s, then check output
+aws s3 ls s3://$BUCKET/gold/
 ```
 
 ---
@@ -779,10 +778,10 @@ gh secret list
 cd terraform && terraform destroy -auto-approve
 
 # Verify bucket is gone
-aws s3 ls | grep search-keyword
+aws s3 ls | grep adobe-stg
 
 # Verify Lambda is gone
-aws lambda list-functions --query 'Functions[?starts_with(FunctionName, `search-keyword`)].FunctionName'
+aws lambda list-functions --query 'Functions[?starts_with(FunctionName, `adobe-`)].FunctionName'
 ```
 
 > After destroying, the KMS key enters a **7-day pending deletion window** (configured via `deletion_window_in_days = 7`). It cannot be recovered after deletion completes.
