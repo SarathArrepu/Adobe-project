@@ -90,12 +90,12 @@ class SearchKeywordAnalyzer:
                 return None
 
             # Remove 'www.' prefix for matching but preserve original for output
-            clean_domain = referrer_domain.lower().lstrip("www.")
+            clean_domain = referrer_domain.lower().removeprefix("www.")
 
             for engine_name, config in self.SEARCH_ENGINES.items():
                 # Check if referrer domain matches any known search engine domain
                 matched = any(
-                    clean_domain == d.lower().lstrip("www.")
+                    clean_domain == d.lower().removeprefix("www.")
                     for d in config["domains"]
                 )
                 if not matched:
