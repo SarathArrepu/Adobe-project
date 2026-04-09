@@ -112,17 +112,20 @@ WARN and INFO issues are logged but do not abort the pipeline. The provided `dat
 ├── notebooks/
 │   └── search_keyword_analysis.ipynb    # Revenue charts (bar, pie, grouped bar)
 ├── terraform/
-│   ├── main.tf                          # Provider + backend only
-│   ├── variables.tf                     # All variable declarations
-│   ├── shared.tf                        # S3, KMS, IAM, Glue DB, Athena
-│   ├── pipelines.tf                     # Module calls per pipeline
-│   ├── observability.tf                 # CloudWatch, Budgets, QuickSight
-│   ├── outputs.tf                       # All outputs
+│   ├── main.tf                          # Provider config + S3 remote-state backend
+│   ├── variables.tf                     # All root-module variable declarations + defaults
+│   ├── shared.tf                        # One-time shared infra: S3 bucket, KMS (2 keys),
+│   │                                    #   IAM admin/developer roles, Glue DB, Athena workgroup
+│   ├── pipelines.tf                     # Lambda zip packaging + one module block per source
+│   │                                    #   (add a new module block here to add a new source)
+│   ├── observability.tf                 # CloudWatch dashboard + Budgets + QuickSight (optional)
+│   ├── outputs.tf                       # All root outputs incl. sample Athena queries
 │   └── modules/
-│       └── pipeline/                    # Reusable module template
-│           ├── main.tf                  # Lambda, IAM, EventBridge, Glue, Crawler
-│           ├── variables.tf
-│           └── outputs.tf
+│       └── pipeline/                    # Reusable per-source module — instantiated once per source
+│           ├── main.tf                  # Lambda + IAM role + EventBridge rule/target +
+│           │                            #   CloudWatch logs/alarm + 3 Glue tables + Crawler
+│           ├── variables.tf             # 18 input variables (source_name, columns, KMS ARNs…)
+│           └── outputs.tf               # 9 outputs (Lambda name, Glue table names, alarm ARN…)
 ├── data/
 │   └── data.sql                         # Sample hit-level data
 ├── .github/
@@ -238,6 +241,8 @@ gh pr create --title "My change" --body "Description"
 ## AWS Infrastructure
 
 Shared infrastructure lives in `terraform/shared.tf`. Per-pipeline resources are created by `terraform/modules/pipeline/` called from `terraform/pipelines.tf`.
+
+> **Full Terraform documentation** — every file, variable, resource, and module output is documented in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#terraform-structure).
 
 | Resource | Name | Purpose |
 |---|---|---|
