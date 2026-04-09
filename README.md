@@ -37,6 +37,7 @@ Three visitors arrived from search engines. One Yahoo visitor ("cd player") brow
                          │      ▼                                      │
                          │  Lambda: pipelines.adobe.handler            │
                          │      │                                      │
+                         │      ├── DQ checks (abort if ERROR)         │
                          │      ├── bronze/raw/    (PII KMS key)       │
                          │      ├── bronze/masked/ (SHA-256 hashed PII)│
                          │      └── gold/          (no PII, output)    │
@@ -68,6 +69,29 @@ Three visitors arrived from search engines. One Yahoo visitor ("cd player") brow
 
 ---
 
+## Data Quality Checks
+
+Before any data is written to S3, `DataQualityChecker` validates the input file. On any **ERROR**-level issue the Lambda aborts and nothing is stored.
+
+| Check | Severity | Description |
+|---|---|---|
+| `MISSING_REQUIRED_COLUMNS` | ERROR | Required columns absent from header — pipeline cannot run |
+| `EMPTY_FILE` | ERROR | No data rows found |
+| `MISSING_APPENDIX_A_COLUMNS` | WARN | Optional Appendix A columns absent (enrichment fields will be missing) |
+| `MISSING_IP` | WARN | Empty IP — row cannot be session-stitched, will be skipped |
+| `INVALID_HIT_TIME` | WARN | `hit_time_gmt` is not a valid Unix timestamp (non-integer or out of 2000–2100 range) |
+| `INVALID_IP_FORMAT` | WARN | IP is not a valid IPv4 address |
+| `DUPLICATE_HIT` | WARN | Same `(hit_time_gmt, ip)` seen more than once — possible replay |
+| `PURCHASE_NO_PRODUCT` | WARN | Purchase event (1) present but `product_list` is empty — revenue will be zero |
+| `PRODUCT_REVENUE_NO_PURCHASE` | WARN | `product_list` has revenue > 0 but no purchase event — revenue silently dropped |
+| `NEGATIVE_REVENUE` | WARN | Revenue field is negative |
+| `MALFORMED_PRODUCT_LIST` | WARN | `product_list` cannot be parsed (too few fields or non-numeric revenue) |
+| `UNKNOWN_EVENT_ID` | INFO | `event_list` contains an unrecognised event ID |
+
+WARN and INFO issues are logged but do not abort the pipeline. The provided `data.sql` passes all ERROR-level checks (0 errors, 0 warnings).
+
+---
+
 ## Project Structure
 
 ```
@@ -76,13 +100,17 @@ Three visitors arrived from search engines. One Yahoo visitor ("cd player") brow
 │   ├── shared/
 │   │   ├── __init__.py
 │   │   ├── search_keyword_analyzer.py   # Core attribution logic
+│   │   ├── dq_checker.py                # Data quality checks (10 checks, ERROR/WARN/INFO)
 │   │   └── base_handler.py              # Shared S3/KMS/PII utilities
 │   └── pipelines/
 │       └── adobe/
 │           ├── __init__.py
 │           └── handler.py               # Adobe Lambda entry point
 ├── tests/
-│   └── test_analyzer.py                 # Unit tests (26 tests)
+│   ├── test_analyzer.py                 # Analyzer unit tests (26 tests)
+│   └── test_dq_checker.py               # DQ checker unit tests (32 tests)
+├── notebooks/
+│   └── search_keyword_analysis.ipynb    # Revenue charts (bar, pie, grouped bar)
 ├── terraform/
 │   ├── main.tf                          # Provider + backend only
 │   ├── variables.tf                     # All variable declarations
@@ -123,8 +151,12 @@ Three visitors arrived from search engines. One Yahoo visitor ("cd player") brow
 ### Local (no AWS required)
 
 ```bash
-# Run tests
-python3 -m unittest tests/test_analyzer.py -v
+# Run all tests (58 tests: 26 analyzer + 32 DQ checker)
+PYTHONPATH=src python -m unittest tests.test_analyzer tests.test_dq_checker -v
+
+# Run the analyzer locally and write output
+mkdir -p output
+PYTHONPATH=src python src/shared/search_keyword_analyzer.py data/data.sql -o output/
 ```
 
 ### AWS Deployment
