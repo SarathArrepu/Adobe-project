@@ -373,7 +373,10 @@ class SearchKeywordAnalyzer:
                 delimiter="\t",  # tab-delimited to match the input format convention
             )
             writer.writeheader()  # write column names as first line
-            writer.writerows(results)  # write all result rows
+            # Format Revenue as a fixed 2-decimal string so the file is consistent
+            # (float repr "290.0" vs "290.00") and Athena DOUBLE parsing is reliable.
+            for row in results:
+                writer.writerow({**row, "Revenue": f"{row['Revenue']:.2f}"})
 
         logger.info(f"Output written to: {output_path} ({len(results)} rows)")
         return output_path  # return path so callers (Lambda, CLI) can reference or upload it
