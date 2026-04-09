@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# post-merge hook — fires after a successful git pull/merge.
+# Reminds the developer to sync any open feature branches with the
+# freshly-updated main so they don't drift too far behind.
+#
+# Install (one-time per clone):
+#   git config core.hooksPath .githooks
+
+set -euo pipefail
+
+YELLOW='\033[1;33m'
+GREEN='\033[0;32m'
+NC='\033[0m'
+
+CURRENT_BRANCH=$(git symbolic-ref --short HEAD 2>/dev/null || echo "HEAD")
+MAIN_BRANCH="main"
+
+# Only act when the pull/merge landed on main
+if [[ "$CURRENT_BRANCH" != "$MAIN_BRANCH" ]]; then
+  exit 0
+fi
+
+# Find local branches that are more than 5 commits behind the freshly-updated main
+STALE_BRANCHES=()
+while IFS= read -r branch; do
+  branch="${branch##* }"   # strip leading whitespace / asterisk
+  branch="${branch#\* }"
+  [[ "$branch" == "$MAIN_BRANCH" ]] && continue
+  [[ "$branch" == "HEAD" ]] && continue
+  BEHIND=$(git rev-list --count "$branch".."$MAIN_BRANCH" 2>/dev/null || echo "0")
+  if [[ "$BEHIND" -gt 5 ]]; then
+    STALE_BRANCHES+=("$branch ($BEHIND commits behind)")
+  fi
+done < <(git branch --format='%(refname:short)')
+
+if [[ "${#STALE_BRANCHES[@]}" -gt 0 ]]; then
+  echo -e "${YELLOW}[post-merge] The following local branches are behind $MAIN_BRANCH and should be rebased:${NC}"
+  for b in "${STALE_BRANCHES[@]}"; do
+    echo -e "${YELLOW}  • $b${NC}"
+  done
+  echo -e "${YELLOW}  To sync: git checkout <branch> && git rebase $MAIN_BRANCH${NC}"
+else
+  echo -e "${GREEN}[post-merge] All local branches are in sync with $MAIN_BRANCH.${NC}"
+fi
+
+exit 0

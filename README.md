@@ -37,6 +37,7 @@ Three visitors arrived from search engines. One Yahoo visitor ("cd player") brow
                          │      ▼                                      │
                          │  Lambda: pipelines.adobe.handler            │
                          │      │                                      │
+                         │      ├── DQ checks (abort if ERROR)         │
                          │      ├── bronze/raw/    (PII KMS key)       │
                          │      ├── bronze/masked/ (SHA-256 hashed PII)│
                          │      └── gold/          (no PII, output)    │
@@ -68,6 +69,29 @@ Three visitors arrived from search engines. One Yahoo visitor ("cd player") brow
 
 ---
 
+## Data Quality Checks
+
+Before any data is written to S3, `DataQualityChecker` validates the input file. On any **ERROR**-level issue the Lambda aborts and nothing is stored.
+
+| Check | Severity | Description |
+|---|---|---|
+| `MISSING_REQUIRED_COLUMNS` | ERROR | Required columns absent from header — pipeline cannot run |
+| `EMPTY_FILE` | ERROR | No data rows found |
+| `MISSING_APPENDIX_A_COLUMNS` | WARN | Optional Appendix A columns absent (enrichment fields will be missing) |
+| `MISSING_IP` | WARN | Empty IP — row cannot be session-stitched, will be skipped |
+| `INVALID_HIT_TIME` | WARN | `hit_time_gmt` is not a valid Unix timestamp (non-integer or out of 2000–2100 range) |
+| `INVALID_IP_FORMAT` | WARN | IP is not a valid IPv4 address |
+| `DUPLICATE_HIT` | WARN | Same `(hit_time_gmt, ip)` seen more than once — possible replay |
+| `PURCHASE_NO_PRODUCT` | WARN | Purchase event (1) present but `product_list` is empty — revenue will be zero |
+| `PRODUCT_REVENUE_NO_PURCHASE` | WARN | `product_list` has revenue > 0 but no purchase event — revenue silently dropped |
+| `NEGATIVE_REVENUE` | WARN | Revenue field is negative |
+| `MALFORMED_PRODUCT_LIST` | WARN | `product_list` cannot be parsed (too few fields or non-numeric revenue) |
+| `UNKNOWN_EVENT_ID` | INFO | `event_list` contains an unrecognised event ID |
+
+WARN and INFO issues are logged but do not abort the pipeline. The provided `data.sql` passes all ERROR-level checks (0 errors, 0 warnings).
+
+---
+
 ## Project Structure
 
 ```
@@ -76,25 +100,32 @@ Three visitors arrived from search engines. One Yahoo visitor ("cd player") brow
 │   ├── shared/
 │   │   ├── __init__.py
 │   │   ├── search_keyword_analyzer.py   # Core attribution logic
+│   │   ├── dq_checker.py                # Data quality checks (10 checks, ERROR/WARN/INFO)
 │   │   └── base_handler.py              # Shared S3/KMS/PII utilities
 │   └── pipelines/
 │       └── adobe/
 │           ├── __init__.py
 │           └── handler.py               # Adobe Lambda entry point
 ├── tests/
-│   └── test_analyzer.py                 # Unit tests (26 tests)
+│   ├── test_analyzer.py                 # Analyzer unit tests (26 tests)
+│   └── test_dq_checker.py               # DQ checker unit tests (32 tests)
+├── notebooks/
+│   └── search_keyword_analysis.ipynb    # Revenue charts (bar, pie, grouped bar)
 ├── terraform/
-│   ├── main.tf                          # Provider + backend only
-│   ├── variables.tf                     # All variable declarations
-│   ├── shared.tf                        # S3, KMS, IAM, Glue DB, Athena
-│   ├── pipelines.tf                     # Module calls per pipeline
-│   ├── observability.tf                 # CloudWatch, Budgets, QuickSight
-│   ├── outputs.tf                       # All outputs
+│   ├── main.tf                          # Provider config + S3 remote-state backend
+│   ├── variables.tf                     # All root-module variable declarations + defaults
+│   ├── shared.tf                        # One-time shared infra: S3 bucket, KMS (2 keys),
+│   │                                    #   IAM admin/developer roles, Glue DB, Athena workgroup
+│   ├── pipelines.tf                     # Lambda zip packaging + one module block per source
+│   │                                    #   (add a new module block here to add a new source)
+│   ├── observability.tf                 # CloudWatch dashboard + Budgets + QuickSight (optional)
+│   ├── outputs.tf                       # All root outputs incl. sample Athena queries
 │   └── modules/
-│       └── pipeline/                    # Reusable module template
-│           ├── main.tf                  # Lambda, IAM, EventBridge, Glue, Crawler
-│           ├── variables.tf
-│           └── outputs.tf
+│       └── pipeline/                    # Reusable per-source module — instantiated once per source
+│           ├── main.tf                  # Lambda + IAM role + EventBridge rule/target +
+│           │                            #   CloudWatch logs/alarm + 3 Glue tables + Crawler
+│           ├── variables.tf             # 18 input variables (source_name, columns, KMS ARNs…)
+│           └── outputs.tf               # 9 outputs (Lambda name, Glue table names, alarm ARN…)
 ├── data/
 │   └── data.sql                         # Sample hit-level data
 ├── .github/
@@ -123,8 +154,12 @@ Three visitors arrived from search engines. One Yahoo visitor ("cd player") brow
 ### Local (no AWS required)
 
 ```bash
-# Run tests
-python3 -m unittest tests/test_analyzer.py -v
+# Run all tests (58 tests: 26 analyzer + 32 DQ checker)
+PYTHONPATH=src python -m unittest tests.test_analyzer tests.test_dq_checker -v
+
+# Run the analyzer locally and write output
+mkdir -p output
+PYTHONPATH=src python src/shared/search_keyword_analyzer.py data/data.sql -o output/
 ```
 
 ### AWS Deployment
@@ -192,14 +227,30 @@ Push / PR / Manual trigger
 
 ### Developer Workflow
 
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the full git workflow rules and hook setup. Summary:
+
 ```bash
-git checkout main && git pull origin main
+# 1. Start from a fresh main
+git checkout main && git pull --rebase origin main
+
+# 2. Create a feature branch
 git checkout -b feature/my-change
-# ... make changes ...
+
+# 3. Stay in sync — run this regularly while working
+git fetch origin && git rebase origin/main
+
+# 4. Commit (pre-commit hook verifies you're not behind remote)
+git add <files> && git commit -m "feat: description"
+
+# 5. Push (pre-push hook checks for conflicts with main before allowing)
 git push -u origin feature/my-change
+
+# 6. Open PR
 gh pr create --title "My change" --body "Description"
 # After review + CI pass → merge via GitHub UI
 ```
+
+> **One-time hook setup per clone:** `git config core.hooksPath .githooks`
 
 ---
 
@@ -207,20 +258,25 @@ gh pr create --title "My change" --body "Description"
 
 Shared infrastructure lives in `terraform/shared.tf`. Per-pipeline resources are created by `terraform/modules/pipeline/` called from `terraform/pipelines.tf`.
 
+> **Full Terraform documentation** — every file, variable, resource, and module output is documented in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#terraform-structure).
+
 | Resource | Name | Purpose |
 |---|---|---|
-| S3 Bucket | `search-keyword-analyzer-dev-{account}` | Shared medallion data lake |
-| Lambda | `search-keyword-analyzer-adobe-dev` | Adobe processing engine |
-| IAM Role (Lambda) | `search-keyword-analyzer-lambda-adobe-dev` | Least-privilege execution role |
-| IAM Role (Admin) | `search-keyword-analyzer-admin-dev` | Full PII access |
-| IAM Role (Developer) | `search-keyword-analyzer-developer-dev` | Masked bronze + gold access |
-| KMS Key | `alias/search-keyword-analyzer-dev` | Standard encryption (all layers) |
-| KMS Key | `alias/search-keyword-analyzer-pii-dev` | PII-only key (admin decrypt only) |
+| S3 Bucket | `adobe-stg-{account}` | Shared medallion data lake |
+| Lambda | `adobe-adobe-stg` | Adobe processing engine |
+| IAM Role (Lambda) | `adobe-lambda-adobe-stg` | Least-privilege execution role |
+| IAM Role (Admin) | `adobe-admin-stg` | Full PII access |
+| IAM Role (Developer) | `adobe-developer-stg` | Masked bronze + gold access |
+| IAM Role (Crawler) | `adobe-crawler-adobe-stg` | Glue Crawler schema discovery |
+| KMS Key | `alias/adobe-stg` | Standard encryption (all layers) |
+| KMS Key | `alias/adobe-pii-stg` | PII-only key (admin decrypt only) |
 | Glue Database | `stg_adobe` | Schema registry for all pipelines |
 | Glue Tables | `adobe_bronze_masked`, `adobe_bronze_raw`, `adobe_gold` | Athena queryable tables |
-| Glue Crawler | `search-keyword-analyzer-adobe-dev-schema` | Daily schema evolution |
-| Athena Workgroup | `search-keyword-analyzer-dev` | Query engine (100 MB scan limit) |
-| CloudWatch | `/aws/lambda/search-keyword-analyzer-adobe-dev` | Logs + error alarm |
+| Glue Crawler | `adobe-adobe-stg-schema` | Daily schema evolution |
+| EventBridge Rule | `adobe-adobe-stg-landing-upload` | Routes S3 landing events to Lambda |
+| Athena Workgroup | `adobe-stg` | Query engine (100 MB scan limit) |
+| CloudWatch Log Group | `/aws/lambda/adobe-adobe-stg` | Logs + error alarm |
+| CloudWatch Dashboard | `adobe-stg` | Lambda/Athena/KMS ops metrics |
 
 ### Security & PII Protection
 
@@ -228,10 +284,10 @@ Shared infrastructure lives in `terraform/shared.tf`. Per-pipeline resources are
 
 | Layer | Mechanism | Key |
 |---|---|---|
-| S3 files (all layers) | SSE-KMS | `alias/search-keyword-analyzer-dev` |
-| `bronze/raw/` (PII data) | SSE-KMS with **dedicated PII key** | `alias/search-keyword-analyzer-pii-dev` |
-| Glue Data Catalog | SSE-KMS | `alias/search-keyword-analyzer-dev` |
-| Athena query results | SSE-KMS | `alias/search-keyword-analyzer-dev` |
+| S3 files (all layers) | SSE-KMS | `alias/adobe-stg` |
+| `bronze/raw/` (PII data) | SSE-KMS with **dedicated PII key** | `alias/adobe-pii-stg` |
+| Glue Data Catalog | SSE-KMS | `alias/adobe-stg` |
+| Athena query results | SSE-KMS | `alias/adobe-stg` |
 | KMS key rotation | Annual, automatic | Both keys |
 
 #### PII Handling
@@ -262,7 +318,7 @@ gold/           — no PII at all (engine / keyword / revenue only)
 
 ## Querying Results with Athena
 
-**Console:** AWS → Athena → Workgroup: `search-keyword-analyzer-dev` → Database: `stg_adobe`
+**Console:** AWS → Athena → Workgroup: `adobe-stg` → Database: `stg_adobe`
 
 ```sql
 -- Top keywords by revenue

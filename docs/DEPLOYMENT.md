@@ -86,8 +86,7 @@ This creates (all free tier eligible except KMS at ~$1/month):
 ## Step 3: Run the Pipeline (Interview Demo)
 
 ```bash
-chmod +x demo.sh
-./demo.sh
+chmod +x scripts/demo.sh && ./scripts/demo.sh
 ```
 
 This runs the full pipeline end-to-end:
@@ -146,6 +145,10 @@ cd terraform && terraform destroy -auto-approve
 ## Local Testing (No AWS Required)
 
 ```bash
-# Run all 26 unit tests
-python3 -m unittest tests/test_analyzer.py -v
+# Run all 58 unit tests (26 analyzer + 32 DQ checker)
+PYTHONPATH=src python3 -m unittest tests.test_analyzer tests.test_dq_checker -v
+
+# Run the analyzer locally against the sample data
+mkdir -p output
+PYTHONPATH=src python3 src/shared/search_keyword_analyzer.py data/data.sql -o output/
 ```

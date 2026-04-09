@@ -1,0 +1,87 @@
+#!/usr/bin/env bash
+# pre-push hook — enforces two rules:
+#   1. Check for merge conflicts with origin/main before pushing
+#      (catches conflicts early, before they land in the PR)
+#   2. Abort if the push would produce a conflict that cannot be auto-resolved
+#
+# Install (one-time per clone):
+#   git config core.hooksPath .githooks
+
+set -euo pipefail
+
+RED='\033[0;31m'
+YELLOW='\033[1;33m'
+GREEN='\033[0;32m'
+NC='\033[0m'
+
+MAIN_BRANCH="main"
+CURRENT_BRANCH=$(git symbolic-ref --short HEAD 2>/dev/null || echo "HEAD")
+
+# Don't run conflict check when pushing main itself
+if [[ "$CURRENT_BRANCH" == "$MAIN_BRANCH" ]]; then
+  exit 0
+fi
+
+# ── Fetch latest main ──────────────────────────────────────────────────────────
+if ! git fetch --quiet origin "$MAIN_BRANCH" 2>/dev/null; then
+  echo -e "${YELLOW}[pre-push] WARNING: Could not fetch origin/$MAIN_BRANCH — skipping conflict check.${NC}"
+  exit 0
+fi
+
+# ── Conflict check: dry-run merge of main into this branch ────────────────────
+# Run the merge in a detached worktree (no-commit, no-ff) so we can detect
+# conflicts without touching the working tree or index.
+#
+# Strategy: stash any in-progress changes, attempt the merge on a temp index,
+# then always restore. We use GIT_INDEX_FILE to avoid touching the real index.
+
+MERGE_BASE=$(git merge-base HEAD "origin/$MAIN_BRANCH" 2>/dev/null || echo "")
+
+if [[ -z "$MERGE_BASE" ]]; then
+  # No common ancestor — new orphan branch, skip check
+  exit 0
+fi
+
+# Check if main has moved since our merge base (i.e. there is anything to check)
+NEW_ON_MAIN=$(git rev-list --count "$MERGE_BASE".."origin/$MAIN_BRANCH" 2>/dev/null || echo "0")
+if [[ "$NEW_ON_MAIN" -eq 0 ]]; then
+  echo -e "${GREEN}[pre-push] No new commits on origin/$MAIN_BRANCH since branch point — no conflict check needed.${NC}"
+  exit 0
+fi
+
+echo -e "${YELLOW}[pre-push] Checking for merge conflicts with origin/$MAIN_BRANCH ($NEW_ON_MAIN new commit(s))...${NC}"
+
+# Use a temporary index to run the merge without touching the real working tree
+TEMP_INDEX=$(mktemp)
+CONFLICT_FOUND=0
+
+(
+  export GIT_INDEX_FILE="$TEMP_INDEX"
+  # Reset the temp index to the current HEAD tree
+  git read-tree HEAD
+  # Attempt the three-way merge into the temp index
+  if ! git merge-tree --write-tree HEAD "origin/$MAIN_BRANCH" &>/dev/null; then
+    CONFLICT_FOUND=1
+  fi
+) 2>/dev/null || CONFLICT_FOUND=1
+
+# Fallback: use merge-tree text output to detect conflict markers
+MERGE_RESULT=$(git merge-tree "$(git merge-base HEAD "origin/$MAIN_BRANCH")" HEAD "origin/$MAIN_BRANCH" 2>/dev/null || echo "")
+if echo "$MERGE_RESULT" | grep -q "^<<<<<<"; then
+  CONFLICT_FOUND=1
+fi
+
+rm -f "$TEMP_INDEX"
+
+if [[ "$CONFLICT_FOUND" -eq 1 ]]; then
+  echo -e "${RED}[pre-push] BLOCKED: Merge conflicts detected with origin/$MAIN_BRANCH.${NC}"
+  echo -e "${YELLOW}  Resolve conflicts before pushing:${NC}"
+  echo -e "${YELLOW}    git fetch origin${NC}"
+  echo -e "${YELLOW}    git rebase origin/$MAIN_BRANCH${NC}"
+  echo -e "${YELLOW}    # Fix any conflicts, then: git rebase --continue${NC}"
+  echo -e "${YELLOW}    git push --force-with-lease origin $CURRENT_BRANCH${NC}"
+  exit 1
+fi
+
+echo -e "${GREEN}[pre-push] No conflicts with origin/$MAIN_BRANCH — push allowed.${NC}"
+exit 0

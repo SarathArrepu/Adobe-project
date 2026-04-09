@@ -2,6 +2,8 @@ __pycache__/
 *.pyc
 dist/
 output/
+.ipynb_checkpoints/
+notebooks/.ipynb_checkpoints/
 .terraform/
 .terraform.lock.hcl
 *.tfstate
