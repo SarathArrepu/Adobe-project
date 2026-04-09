@@ -102,11 +102,17 @@ Three visitors arrived from search engines. One Yahoo visitor ("cd player") brow
 │       └── ci-cd.yml                    # GitHub Actions pipeline
 ├── output/                              # Generated reports (gitignored)
 ├── dist/                                # Lambda zip artifacts (gitignored)
+├── scripts/
+│   ├── demo.sh                          # One-command full demo
+│   └── update_ppt.py                    # Presentation helper
+├── docs/
+│   ├── ARCHITECTURE.md                  # Current architecture detail
+│   ├── FUTURE_ARCHITECTURE.md           # Scaling roadmap
+│   ├── RUNBOOK.md                       # Full operational guide
+│   ├── DEPLOYMENT.md                    # Quick deployment reference
+│   ├── architecture.html                # Visual architecture diagram
+│   └── Adobe_Assessment_Presentation.pptx
 ├── README.md
-├── ARCHITECTURE.md                      # Current architecture detail
-├── FUTURE_ARCHITECTURE.md               # Scaling roadmap
-├── RUNBOOK.md                           # Full operational guide
-├── DEPLOYMENT.md                        # Quick deployment reference
 └── requirements.txt                     # No external dependencies
 ```
 
@@ -147,7 +153,7 @@ aws s3 ls s3://$BUCKET/gold/
 ### Full Demo (one command)
 
 ```bash
-chmod +x demo.sh && ./demo.sh
+chmod +x scripts/demo.sh && ./scripts/demo.sh
 ```
 
 ---
@@ -277,7 +283,7 @@ WHERE event_list LIKE '%1%';
 ```bash
 aws athena start-query-execution \
   --query-string "SELECT * FROM stg_adobe.adobe_gold ORDER BY revenue DESC" \
-  --work-group "search-keyword-analyzer-dev" \
+  --work-group "adobe-stg" \
   --query-execution-context "Database=stg_adobe"
 ```
 
@@ -285,22 +291,22 @@ aws athena start-query-execution \
 
 ## Adding a New Pipeline
 
-The module in `terraform/modules/pipeline/` is reusable. To add Salesforce:
+The module in `terraform/modules/pipeline/` is reusable. To add a new source (e.g. `<source>`):
 
-1. Create `src/pipelines/salesforce/__init__.py` (empty)
-2. Create `src/pipelines/salesforce/handler.py` (copy adobe handler, update transformation logic)
+1. Create `src/pipelines/<source>/__init__.py` (empty)
+2. Create `src/pipelines/<source>/handler.py` (copy adobe handler, update transformation logic)
 3. Add to `terraform/pipelines.tf`:
 ```hcl
-module "salesforce_pipeline" {
+module "<source>_pipeline" {
   source         = "./modules/pipeline"
-  source_name    = "salesforce"
-  lambda_handler = "pipelines.salesforce.handler.lambda_handler"
+  source_name    = "<source>"
+  lambda_handler = "pipelines.<source>.handler.lambda_handler"
   bronze_columns = [ ... ]
   gold_columns   = [ ... ]
-  # all shared vars identical to adobe module call
+  # all shared vars identical to adobe_pipeline block
 }
 ```
-4. `terraform apply` — Lambda, Glue tables (`salesforce_bronze_masked`, `salesforce_bronze_raw`, `salesforce_gold`), EventBridge rule all created automatically.
+4. `terraform apply` — Lambda, Glue tables (`<source>_bronze_masked`, `<source>_bronze_raw`, `<source>_gold`), EventBridge rule all created automatically.
 
 ---
 
