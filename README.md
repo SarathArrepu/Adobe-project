@@ -40,7 +40,7 @@ Three visitors arrived from search engines. One Yahoo visitor ("cd player") brow
                          │      ├── DQ checks (abort if ERROR)         │
                          │      ├── bronze/raw/    (PII KMS key)       │
                          │      ├── bronze/masked/ (SHA-256 hashed PII)│
-                         │      └── gold/          (no PII, output)    │
+                         │      └── gold/dt=YYYY-MM-DD/ (no PII, output)│
                          │                                             │
                          │  Glue Catalog (stg_adobe) ──► Athena        │
                          │  KMS (two keys: data + PII)                 │
@@ -55,7 +55,7 @@ Three visitors arrived from search engines. One Yahoo visitor ("cd player") brow
 | Landing | `landing/adobe/` | Raw uploads (trigger zone) | 60 days |
 | Bronze Raw | `bronze/raw/` | Original data, plaintext PII, PII KMS key | 1 year → Glacier |
 | Bronze Masked | `bronze/masked/` | SHA-256 hashed ip/user_agent | 1 year → Glacier |
-| Gold | `gold/` | Aggregated output, no PII | 1 year |
+| Gold | `gold/dt=YYYY-MM-DD/` | Aggregated output, no PII — partitioned by arrival date, insert-overwrite per run | 1 year |
 | Athena Results | `athena-results/` | Query scratch space | 7 days |
 
 ---
@@ -181,8 +181,8 @@ BUCKET=$(cd terraform && terraform output -raw s3_bucket)
 # Upload data file → triggers Lambda automatically
 aws s3 cp data/data.sql s3://$BUCKET/landing/adobe/data.sql
 
-# Wait ~20 seconds, then check output
-aws s3 ls s3://$BUCKET/gold/
+# Wait ~20 seconds, then check output (partitioned by arrival date)
+aws s3 ls s3://$BUCKET/gold/ --recursive
 ```
 
 ### Full Demo (one command)
@@ -297,7 +297,7 @@ The dataset contains `ip` (direct PII) and `user_agent` (quasi-identifier). The 
 ```
 bronze/raw/     — plaintext ip/user_agent, PII KMS key (admin role only)
 bronze/masked/  — SHA-256 hashed ip/user_agent, standard KMS key (developer accessible)
-gold/           — no PII at all (engine / keyword / revenue only)
+gold/dt=YYYY-MM-DD/ — no PII at all (engine / keyword / revenue only), insert-overwrite per partition
 ```
 
 | Role | bronze/raw | bronze/masked | gold | PII KMS Decrypt |
@@ -321,8 +321,16 @@ gold/           — no PII at all (engine / keyword / revenue only)
 **Console:** AWS → Athena → Workgroup: `adobe-stg` → Database: `stg_adobe`
 
 ```sql
--- Top keywords by revenue
-SELECT * FROM stg_adobe.adobe_gold ORDER BY revenue DESC;
+-- Top keywords by revenue (all partitions)
+SELECT dt, search_engine_domain, search_keyword, revenue
+FROM stg_adobe.adobe_gold
+ORDER BY revenue DESC;
+
+-- Top keywords for a specific load date (partition pruning — cheaper scan)
+SELECT search_engine_domain, search_keyword, revenue
+FROM stg_adobe.adobe_gold
+WHERE dt = '2026-04-09'
+ORDER BY revenue DESC;
 
 -- Unique visitors by page (masked bronze — no real IPs)
 SELECT pagename, COUNT(*) AS hits
@@ -335,10 +343,12 @@ FROM stg_adobe.adobe_bronze_masked
 WHERE event_list LIKE '%1%';
 ```
 
+> After each new load, run `MSCK REPAIR TABLE stg_adobe.adobe_gold` once to register new `dt=` partitions.
+
 **CLI:**
 ```bash
 aws athena start-query-execution \
-  --query-string "SELECT * FROM stg_adobe.adobe_gold ORDER BY revenue DESC" \
+  --query-string "SELECT dt, search_engine_domain, search_keyword, revenue FROM stg_adobe.adobe_gold ORDER BY revenue DESC" \
   --work-group "adobe-stg" \
   --query-execution-context "Database=stg_adobe"
 ```
@@ -392,6 +402,8 @@ For **10 GB+ files**:
 4. **Line-by-line streaming** — File is never fully loaded into memory. Foundation for future scale improvements.
 
 5. **Modular Terraform** — Each pipeline is an isolated module call. Shared infra (S3, KMS, IAM) lives in `shared.tf`. Adding a source requires no shared infrastructure changes.
+
+6. **Insert-overwrite on gold partition** — The gold layer is partitioned by arrival date (`gold/dt=YYYY-MM-DD/`). Before each write, all existing objects in that partition are deleted, so rerunning for a date is always a clean replace. This makes bad-load recovery and backfill safe — no duplicate rows, no manual cleanup.
 
 ---
 

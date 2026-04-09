@@ -11,7 +11,9 @@ Processing steps
 2. **Attribution** — SearchKeywordAnalyzer streams the file, attributes revenue
    to external search keywords, and builds the aggregated output.
 3. **Gold layer** — Aggregated keyword-performance report (no PII) uploaded to
-   ``gold/``.
+   ``gold/dt=YYYY-MM-DD/`` using an insert-overwrite strategy: existing objects
+   in today's partition are deleted before the new file is written, making
+   reruns and backfills safe and idempotent.
 4. **Bronze raw** — Original file re-uploaded to ``bronze/raw/`` with the
    dedicated PII KMS key (admin-decrypt only).
 5. **Bronze masked** — PII fields (ip, user_agent) SHA-256 hashed; written to
@@ -29,7 +31,8 @@ import json                         # used to serialise the Lambda response body
 import logging                      # structured log output to CloudWatch
 import os                           # file-system path helpers and environment variables
 import boto3                        # AWS SDK — S3 download/upload operations
-from urllib.parse import unquote_plus  # decode percent-encoded S3 key names (spaces, etc.)
+from datetime import datetime, timezone  # UTC timestamp for dt= partition key
+from urllib.parse import unquote_plus    # decode percent-encoded S3 key names (spaces, etc.)
 
 from shared.search_keyword_analyzer import SearchKeywordAnalyzer  # core revenue-attribution logic
 from shared.dq_checker import DataQualityChecker                  # input validation gate
@@ -95,9 +98,33 @@ def lambda_handler(event: dict, context: object) -> dict:
 
         # ── Step 3: Gold layer: aggregated keyword performance, no PII ──────
         # The gold output contains only (engine, keyword, revenue) — no IP, no user_agent.
-        output_path = analyzer.write_output("/tmp/output") # write tab-delimited report to /tmp
-        gold_key    = f"gold/{os.path.basename(output_path)}"  # e.g. "gold/2024-01-15_SearchKeywordPerformance.tab"
-        s3_client.upload_file(output_path, bucket, gold_key)   # upload gold report to S3
+        # Strategy: INSERT-OVERWRITE on a dt= partition.
+        #   - Partition key: dt=YYYY-MM-DD (arrival date, UTC)
+        #   - Before uploading, delete all existing objects under gold/dt=<today>/
+        #     so a rerun or backfill for the same date replaces — not appends — the data.
+        output_path = analyzer.write_output("/tmp/output")  # write datetime-stamped .tab file to /tmp
+
+        # Build the Hive-style partition path: gold/dt=2026-04-08/<datetime_filename>
+        dt_date  = datetime.now(timezone.utc).strftime("%Y-%m-%d")  # partition date (UTC)
+        gold_prefix = f"gold/dt={dt_date}/"                         # all objects for today's partition
+        gold_key    = f"{gold_prefix}{os.path.basename(output_path)}"  # e.g. gold/dt=2026-04-08/2026-04-08T14-30-00_SearchKeywordPerformance.tab
+
+        # --- Insert-overwrite: delete existing partition objects before writing ----
+        # List all objects in gold/dt=<today>/ and delete them so the rerun is clean.
+        paginator = s3_client.get_paginator("list_objects_v2")  # paginate in case > 1000 objects
+        objects_to_delete = []
+        for page in paginator.paginate(Bucket=bucket, Prefix=gold_prefix):
+            for obj in page.get("Contents", []):              # "Contents" absent when prefix is empty
+                objects_to_delete.append({"Key": obj["Key"]})  # collect all keys in the partition
+
+        if objects_to_delete:
+            s3_client.delete_objects(
+                Bucket=bucket,
+                Delete={"Objects": objects_to_delete, "Quiet": True},  # Quiet=True suppresses per-key success entries
+            )
+            logger.info(f"Insert-overwrite: deleted {len(objects_to_delete)} existing object(s) from {gold_prefix}")
+
+        s3_client.upload_file(output_path, bucket, gold_key)  # upload fresh gold report
         logger.info(f"Uploaded gold output: s3://{bucket}/{gold_key}")
 
         # ── Step 4: Bronze layers: raw (PII key) + masked (standard key) ────

@@ -72,6 +72,17 @@ resource "aws_iam_role_policy" "lambda_s3_kms" {
         ]
       },
       {
+        # Insert-overwrite: Lambda must list + delete the existing dt= partition
+        # objects in gold/ before writing the new file for idempotent reruns.
+        Sid    = "GoldInsertOverwrite"
+        Effect = "Allow"
+        Action = ["s3:DeleteObject", "s3:ListBucket"]
+        Resource = [
+          var.s3_bucket_arn,             # s3:ListBucket applies to the bucket ARN (not the prefix)
+          "${var.s3_bucket_arn}/gold/*", # s3:DeleteObject applies to the object ARN
+        ]
+      },
+      {
         Sid      = "StandardKms"
         Effect   = "Allow"
         Action   = ["kms:Encrypt", "kms:Decrypt", "kms:GenerateDataKey", "kms:DescribeKey"]
@@ -277,9 +288,20 @@ resource "aws_glue_catalog_table" "gold" {
   parameters = {
     "EXTERNAL"       = "TRUE"
     "classification" = "tsv"
+    # Hive-style dt= partitioning; Athena prunes partitions on WHERE dt = '...' predicates
+    "partition_filtering.enabled" = "true"
+  }
+
+  # dt STRING is the Hive-style arrival-date partition column.
+  # Objects live at gold/dt=YYYY-MM-DD/<file>.tab; Athena infers the value from the path.
+  partition_keys {
+    name    = "dt"
+    type    = "string"
+    comment = "Arrival date (UTC) of the Lambda invocation — used for insert-overwrite partitioning"
   }
 
   storage_descriptor {
+    # Root prefix only — Athena appends dt=<value>/ automatically for partition queries.
     location      = "s3://${var.s3_bucket_id}/gold/"
     input_format  = local.input_format
     output_format = local.output_format

@@ -298,6 +298,9 @@ class TestEndToEnd(unittest.TestCase):
         """
         Verify that write_output() creates a tab-delimited file with the
         correct filename suffix and three required columns.
+
+        Filename format: ``YYYY-MM-DDThh-mm-ss_SearchKeywordPerformance.tab``
+        (datetime stamp so multiple files landing on the same day are unique).
         """
         filepath = self._create_sample_data()
         analyzer = SearchKeywordAnalyzer(filepath)
@@ -305,7 +308,13 @@ class TestEndToEnd(unittest.TestCase):
         output_path = analyzer.write_output(self.output_dir)  # write to temp output dir
 
         self.assertTrue(os.path.exists(output_path))                    # file was created
+        # Filename must end with the standard suffix; the datetime prefix is variable
         self.assertTrue(output_path.endswith("_SearchKeywordPerformance.tab"))  # naming convention
+        # Verify datetime prefix format: YYYY-MM-DDThh-mm-ss (19 chars before the underscore)
+        filename = os.path.basename(output_path)
+        dt_prefix = filename.split("_SearchKeywordPerformance")[0]  # e.g. "2026-04-08T14-30-00"
+        self.assertEqual(len(dt_prefix), 19, f"Expected 19-char datetime prefix, got: {dt_prefix}")
+        self.assertRegex(dt_prefix, r"^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}$")  # strict format check
 
         # Open the output and verify structure
         with open(output_path, "r") as f:
