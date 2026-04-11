@@ -32,7 +32,7 @@
 │           ▼                                                         │
 │  ┌──────────────────────────────────────────────────────┐      │
 │  │   Lambda: adobe-adobe-stg                            │      │
-│  │   Handler: pipelines.adobe.handler.lambda_handler    │      │
+│  │   Handler: adobe.handler.lambda_handler               │      │
 │  │   Runtime: Python 3.12                               │      │
 │  │                                                      │      │
 │  │   1. Run DataQualityChecker — abort if ERROR found    │      │
@@ -91,7 +91,6 @@ terraform/
 ├── main.tf              ← Provider config + S3 remote-state backend
 ├── variables.tf         ← All root-module variable declarations + defaults
 ├── shared.tf            ← One-time shared infrastructure (see below)
-├── pipelines.tf         ← Lambda zip packaging + one module block per source
 ├── observability.tf     ← CloudWatch dashboard, Budgets, QuickSight (optional)
 ├── outputs.tf           ← All root-module outputs
 └── modules/
@@ -99,6 +98,16 @@ terraform/
         ├── main.tf      ← All per-source resources
         ├── variables.tf ← Module input variable declarations
         └── outputs.tf   ← Module output declarations
+
+modules/
+└── adobe/               ← One folder per pipeline — copy to add a new source
+    ├── src/adobe/       ← Python package (analyzer.py + handler.py)
+    ├── terraform/
+    │   └── pipeline.tf  ← Pipeline-specific Terraform; staged to terraform/ by CI/CD
+    └── tests/           ← Module unit tests
+
+scripts/
+└── build.sh             ← Packages src/shared/ + modules/*/src/ into dist/lambda.zip
 ```
 
 ### `main.tf` — Provider and backend
@@ -150,22 +159,20 @@ terraform/
 | `aws_glue_data_catalog_encryption_settings` | — | Glue Data Catalog SSE-KMS with data key |
 | `aws_athena_workgroup.analytics` | `{project}-{env}` | Query engine — 100 MB/query scan limit, results encrypted |
 
-### `pipelines.tf` — Lambda packaging + pipeline module calls
+### `modules/<source>/terraform/pipeline.tf` — Pipeline-specific Terraform
 
-| Block | Purpose |
-|---|---|
-| `data "archive_file" "lambda_zip"` | Zips `src/` into `dist/lambda.zip` — one zip shared by all pipelines |
-| `module "adobe_pipeline"` | Creates all Adobe-source resources by calling `./modules/pipeline` |
-| Comment block at bottom | Template for adding a new source — copy the `module` block and update 4 variables |
+Each pipeline owns its own `pipeline.tf` under `modules/<source>/terraform/`. CI/CD copies this file to `terraform/<source>_pipeline.tf` before `terraform init/apply` so Terraform merges it with the shared root module. `scripts/build.sh` provides the equivalent locally.
 
 **Only 4 variables differ per source:**
 
 | Variable | Adobe value | What to change for a new source |
 |---|---|---|
 | `source_name` | `"adobe"` | Short ID used in resource names and S3 prefixes |
-| `lambda_handler` | `"pipelines.adobe.handler.lambda_handler"` | Python dotted path to the handler function |
+| `lambda_handler` | `"adobe.handler.lambda_handler"` | Python dotted path to the handler function |
 | `bronze_columns` | 12 hit-level TSV columns | Schema of the raw/masked TSV your Lambda writes |
 | `gold_columns` | 3 aggregated columns | Schema of the output TSV your Lambda writes |
+
+The Lambda zip is pre-built by `scripts/build.sh` (locally) or the CI/CD "Package Lambda" job. Terraform reads `filebase64sha256` of the zip to detect code changes — no `data "archive_file"` resource.
 
 ### `observability.tf` — Operations visibility and cost controls
 
@@ -262,19 +269,21 @@ Each call to this module creates one fully-isolated pipeline for a data source. 
 
 ```
 src/
-├── shared/                          ← reused by all pipelines
-│   ├── __init__.py
-│   ├── search_keyword_analyzer.py   ← attribution logic (parse_search_engine, parse_revenue, etc.)
-│   └── base_handler.py              ← S3/KMS utilities (archive_raw, archive_masked, hash_pii)
-└── pipelines/
+└── shared/                          ← reused by all pipelines
     ├── __init__.py
-    └── adobe/                       ← Adobe-specific handler (its own folder)
-        ├── __init__.py
-        └── handler.py               ← lambda_handler entry point
+    ├── dq_checker.py                ← data quality checks (ERROR/WARN/INFO)
+    └── base_handler.py              ← S3/KMS utilities (archive_raw, archive_masked, hash_pii)
+
+modules/adobe/src/
+└── adobe/                           ← Adobe-specific package
+    ├── __init__.py
+    ├── analyzer.py                  ← SearchKeywordAnalyzer (attribution logic)
+    └── handler.py                   ← lambda_handler entry point
 ```
 
-Lambda handler string: `pipelines.adobe.handler.lambda_handler`
-ZIP is built from `src/` as root → packages are importable via Python dot notation.
+Lambda handler string: `adobe.handler.lambda_handler`
+
+The Lambda zip is staged by merging `src/shared/` → `shared/` and `modules/*/src/` → root, so all packages are importable at the top level inside the zip.
 
 ---
 
@@ -345,29 +354,27 @@ landing/            Read ✓           Read ✗            Read ✓
 
 ## Adding a New Data Source
 
-1. **Create the handler**
-   ```
-   src/pipelines/<source>/__init__.py   (empty)
-   src/pipelines/<source>/handler.py    (copy adobe handler, update transformation logic)
-   ```
-
-2. **Add Terraform module block** in `terraform/pipelines.tf`:
-   ```hcl
-   module "<source>_pipeline" {
-     source         = "./modules/pipeline"
-     source_name    = "<source>"
-     lambda_handler = "pipelines.<source>.handler.lambda_handler"
-     bronze_columns = [ ... ]   # schema of TSV your Lambda writes to bronze/
-     gold_columns   = [ ... ]   # schema of TSV your Lambda writes to gold/
-     # All other vars are identical to the adobe_pipeline block — copy them as-is
-   }
+1. **Copy the adobe module folder**
+   ```bash
+   cp -r modules/adobe modules/<source>
    ```
 
-3. **Run CI** — push to a PR → CI runs `terraform apply` → new Lambda, Glue tables (`<source>_bronze_masked`, `<source>_bronze_raw`, `<source>_gold`), EventBridge rule all created automatically
+2. **Rename the Python package**
+   ```bash
+   mv modules/<source>/src/adobe modules/<source>/src/<source>
+   ```
 
-4. **Upload data** — `aws s3 cp <file> s3://<bucket>/landing/<source>/<file>`
+3. **Update the module** — edit `modules/<source>/src/<source>/analyzer.py` (transformation logic) and `modules/<source>/src/<source>/handler.py` (imports).
 
-No shared infrastructure changes needed. Each source is fully isolated.
+4. **Update Terraform** — in `modules/<source>/terraform/pipeline.tf` change `source_name`, `lambda_handler`, `bronze_columns`, and `gold_columns`.
+
+5. **Build and deploy**
+   ```bash
+   ./scripts/build.sh
+   terraform -chdir=terraform apply
+   ```
+
+CI/CD auto-discovers the new module (loops `modules/*/`). No changes to shared Terraform files needed. Each source gets isolated Lambda, Glue tables (`<source>_bronze_masked`, `<source>_bronze_raw`, `<source>_gold`), and EventBridge rule.
 
 ---
 

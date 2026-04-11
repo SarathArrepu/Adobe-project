@@ -21,10 +21,11 @@ Processing steps
 
 Adding a new data source
 ------------------------
-1. Copy this directory to ``src/pipelines/<source>/``
-2. Replace ``SearchKeywordAnalyzer`` with your transformation class
-3. Add a ``module`` block in ``terraform/pipelines.tf``
-4. Run ``terraform apply``
+1. Copy modules/adobe/ to modules/<source>/
+2. Rename the inner src/<source>/ package folder to match your source name
+3. Replace ``SearchKeywordAnalyzer`` with your transformation class
+4. Update the module block in modules/<source>/terraform/pipeline.tf
+5. Run ``scripts/build.sh && terraform -chdir=terraform apply``
 """
 
 import json                         # used to serialise the Lambda response body
@@ -34,9 +35,9 @@ import boto3                        # AWS SDK — S3 download/upload operations
 from datetime import datetime, timezone  # UTC timestamp for dt= partition key
 from urllib.parse import unquote_plus    # decode percent-encoded S3 key names (spaces, etc.)
 
-from shared.search_keyword_analyzer import SearchKeywordAnalyzer  # core revenue-attribution logic
-from shared.dq_checker import DataQualityChecker                  # input validation gate
-from shared.base_handler import archive_raw, archive_masked       # bronze-layer archival helpers
+from adobe.analyzer import SearchKeywordAnalyzer         # adobe revenue-attribution logic
+from shared.dq_checker import DataQualityChecker         # input validation gate
+from shared.base_handler import archive_raw, archive_masked  # bronze-layer archival helpers
 
 logger = logging.getLogger()         # root logger; level controlled by Lambda env var LOG_LEVEL
 logger.setLevel(logging.INFO)        # default to INFO so DQ summaries are always visible

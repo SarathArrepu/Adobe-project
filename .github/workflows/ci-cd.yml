@@ -25,13 +25,23 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: Run tests
-        run: PYTHONPATH=src python -m unittest tests.test_analyzer tests.test_dq_checker -v
+      - name: Run shared tests
+        run: PYTHONPATH=src python -m unittest discover -s tests -p "test_*.py" -v
+
+      - name: Run module tests
+        run: |
+          for module_dir in modules/*/; do
+            module_name=$(basename "$module_dir")
+            echo "--- Testing module: $module_name ---"
+            PYTHONPATH="src:${module_dir}src" python -m unittest discover \
+              -s "${module_dir}tests" -p "test_*.py" -v
+          done
 
       - name: Test local pipeline (no AWS)
         run: |
           mkdir -p output
-          PYTHONPATH=src python src/shared/search_keyword_analyzer.py data/data.sql -o output/
+          PYTHONPATH="src:modules/adobe/src" python \
+            modules/adobe/src/adobe/analyzer.py data/adobe/data.sql -o output/
           ls -la output/
 
   # ── Job 2: Package Lambda & upload artifact ───────────────────────────────
@@ -42,10 +52,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Create Lambda zip
+      - name: Build Lambda zip
         run: |
-          mkdir -p dist
-          cd src && zip -r ../dist/lambda.zip . --exclude "*__pycache__*" "*.pyc"
+          mkdir -p dist staging/shared
+          # Copy shared utilities (dq_checker, base_handler)
+          cp -r src/shared/. staging/shared/
+          # Copy each pipeline module's source package
+          # Each module's src/ contains a package named after the module (e.g. adobe/)
+          for module_dir in modules/*/; do
+            cp -r "${module_dir}src/." staging/
+          done
+          cd staging && zip -r ../dist/lambda.zip . --exclude "*__pycache__*" "*.pyc"
           echo "Lambda package size: $(du -sh ../dist/lambda.zip | cut -f1)"
 
       - name: Upload Lambda artifact
@@ -71,6 +88,14 @@ jobs:
         with:
           name: lambda-package-${{ github.sha }}
           path: dist/
+
+      - name: Stage pipeline Terraform configs
+        run: |
+          # Each module owns its pipeline.tf; copy into terraform/ so Terraform sees it.
+          for module_dir in modules/*/; do
+            module_name=$(basename "$module_dir")
+            cp "${module_dir}terraform/pipeline.tf" "terraform/${module_name}_pipeline.tf"
+          done
 
       - name: Set up Terraform
         uses: hashicorp/setup-terraform@v3
@@ -132,6 +157,14 @@ jobs:
         with:
           name: lambda-package-${{ github.sha }}
           path: dist/
+
+      - name: Stage pipeline Terraform configs
+        run: |
+          # Each module owns its pipeline.tf; copy into terraform/ so Terraform sees it.
+          for module_dir in modules/*/; do
+            module_name=$(basename "$module_dir")
+            cp "${module_dir}terraform/pipeline.tf" "terraform/${module_name}_pipeline.tf"
+          done
 
       - name: Set up Terraform
         uses: hashicorp/setup-terraform@v3

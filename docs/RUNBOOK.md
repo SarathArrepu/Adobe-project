@@ -257,15 +257,18 @@ Glue database: `{environment}_{project}` (underscores, derived dynamically via `
 ### File and Directory Naming
 
 ```
-src/shared/                 # Shared Python utilities (snake_case.py)
-src/pipelines/<source>/     # Per-source Lambda handler
-tests/                      # Test files (test_<module>.py)
-terraform/                  # Root module — split by concern
-terraform/modules/pipeline/ # Reusable pipeline module
-data/                       # Input data files
-output/                     # Generated output (gitignored)
-dist/                       # Build artifacts (gitignored)
-.github/workflows/          # GitHub Actions (kebab-case.yml)
+src/shared/                       # Shared Python utilities (snake_case.py)
+modules/<source>/src/<source>/    # Per-source Lambda package (analyzer.py + handler.py)
+modules/<source>/terraform/       # Per-source Terraform (pipeline.tf)
+modules/<source>/tests/           # Per-source unit tests (test_*.py)
+tests/                            # Shared test files (test_<module>.py)
+terraform/                        # Root module — split by concern
+terraform/modules/pipeline/       # Reusable pipeline module
+data/<source>/                    # Input data files per source
+output/                           # Generated output (gitignored)
+dist/                             # Build artifacts (gitignored)
+scripts/                          # build.sh, demo.sh
+.github/workflows/                # GitHub Actions (kebab-case.yml)
 ```
 
 ### Output File Naming
@@ -366,26 +369,26 @@ cd terraform && terraform apply
 
 The pipeline module is reusable. Adding a new source requires three steps only — no shared infrastructure changes needed.
 
-### Step 1 — Write the handler
+### Step 1 — Copy the adobe module folder
 
+```bash
+cp -r modules/adobe modules/<source>
+mv modules/<source>/src/adobe modules/<source>/src/<source>
 ```
-src/pipelines/<source>/__init__.py    (empty — makes it a Python package)
-src/pipelines/<source>/handler.py    (copy adobe handler, update transformation logic)
-```
 
-Key things to change in the handler:
-- Replace `SearchKeywordAnalyzer` with your source-specific transformation class
-- Update the `logger.info` messages to reference the new source name
-- All S3/KMS utilities (`archive_raw`, `archive_masked`) are already in `src/shared/base_handler.py` — import them unchanged
+Edit `modules/<source>/src/<source>/analyzer.py` with your source-specific transformation logic.
+All S3/KMS utilities (`archive_raw`, `archive_masked`) live in `src/shared/base_handler.py` — import them unchanged.
 
-### Step 2 — Add module block to `terraform/pipelines.tf`
+### Step 2 — Update `modules/<source>/terraform/pipeline.tf`
+
+Change only the four source-specific variables:
 
 ```hcl
 module "<source>_pipeline" {
   source = "./modules/pipeline"
 
   source_name    = "<source>"
-  lambda_handler = "pipelines.<source>.handler.lambda_handler"
+  lambda_handler = "<source>.handler.lambda_handler"
 
   bronze_columns = [
     # define the TSV schema your Lambda writes to bronze/
@@ -409,17 +412,18 @@ module "<source>_pipeline" {
   pii_kms_key_arn       = aws_kms_key.pii_key.arn
   glue_database_name    = aws_glue_catalog_database.analytics.name
   athena_workgroup_name = aws_athena_workgroup.analytics.name
-  lambda_zip_path       = data.archive_file.lambda_zip.output_path
-  lambda_zip_hash       = data.archive_file.lambda_zip.output_base64sha256
+  lambda_zip_path       = "${path.module}/../dist/lambda.zip"
+  lambda_zip_hash       = filebase64sha256("${path.module}/../dist/lambda.zip")
   lambda_timeout_seconds = var.lambda_timeout_seconds
   lambda_memory_mb      = var.lambda_memory_mb
 }
 ```
 
-### Step 3 — Deploy
+### Step 3 — Build and deploy
 
 ```bash
-cd terraform && terraform apply
+./scripts/build.sh
+terraform -chdir=terraform apply
 ```
 
 This automatically creates (resource names follow the `{project}-{source}-{env}` pattern):

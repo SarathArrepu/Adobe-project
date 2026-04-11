@@ -35,7 +35,7 @@ Three visitors arrived from search engines. One Yahoo visitor ("cd player") brow
 └──────────┘             │      │                                      │
                          │      │ EventBridge (Object Created)         │
                          │      ▼                                      │
-                         │  Lambda: pipelines.adobe.handler            │
+                         │  Lambda: adobe.handler.lambda_handler       │
                          │      │                                      │
                          │      ├── DQ checks (abort if ERROR)         │
                          │      ├── bronze/raw/    (PII KMS key)       │
@@ -96,19 +96,25 @@ WARN and INFO issues are logged but do not abort the pipeline. The provided `dat
 
 ```
 .
+├── modules/
+│   └── adobe/                           # One folder per pipeline — copy this to add a new source
+│       ├── src/
+│       │   └── adobe/
+│       │       ├── __init__.py
+│       │       ├── analyzer.py          # SearchKeywordAnalyzer — attribution logic
+│       │       └── handler.py           # Lambda entry point (adobe.handler.lambda_handler)
+│       ├── terraform/
+│       │   └── pipeline.tf              # Pipeline-specific Terraform (copied to terraform/ by CI/CD)
+│       └── tests/
+│           └── test_analyzer.py         # Analyzer unit tests (26 tests)
 ├── src/
-│   ├── shared/
-│   │   ├── __init__.py
-│   │   ├── search_keyword_analyzer.py   # Core attribution logic
-│   │   ├── dq_checker.py                # Data quality checks (10 checks, ERROR/WARN/INFO)
-│   │   └── base_handler.py              # Shared S3/KMS/PII utilities
-│   └── pipelines/
-│       └── adobe/
-│           ├── __init__.py
-│           └── handler.py               # Adobe Lambda entry point
+│   └── shared/
+│       ├── __init__.py
+│       ├── dq_checker.py                # Data quality checks (10 checks, ERROR/WARN/INFO)
+│       └── base_handler.py              # Shared S3/KMS/PII utilities
 ├── tests/
-│   ├── test_analyzer.py                 # Analyzer unit tests (26 tests)
-│   └── test_dq_checker.py               # DQ checker unit tests (32 tests)
+│   └── test_shared/
+│       └── test_dq_checker.py           # DQ checker unit tests (32 tests)
 ├── notebooks/
 │   └── search_keyword_analysis.ipynb    # Revenue charts (bar, pie, grouped bar)
 ├── terraform/
@@ -116,8 +122,6 @@ WARN and INFO issues are logged but do not abort the pipeline. The provided `dat
 │   ├── variables.tf                     # All root-module variable declarations + defaults
 │   ├── shared.tf                        # One-time shared infra: S3 bucket, KMS (2 keys),
 │   │                                    #   IAM admin/developer roles, Glue DB, Athena workgroup
-│   ├── pipelines.tf                     # Lambda zip packaging + one module block per source
-│   │                                    #   (add a new module block here to add a new source)
 │   ├── observability.tf                 # CloudWatch dashboard + Budgets + QuickSight (optional)
 │   ├── outputs.tf                       # All root outputs incl. sample Athena queries
 │   └── modules/
@@ -127,13 +131,15 @@ WARN and INFO issues are logged but do not abort the pipeline. The provided `dat
 │           ├── variables.tf             # 18 input variables (source_name, columns, KMS ARNs…)
 │           └── outputs.tf               # 9 outputs (Lambda name, Glue table names, alarm ARN…)
 ├── data/
-│   └── data.sql                         # Sample hit-level data
+│   └── adobe/
+│       └── data.sql                     # Sample hit-level data
 ├── .github/
 │   └── workflows/
 │       └── ci-cd.yml                    # GitHub Actions pipeline
 ├── output/                              # Generated reports (gitignored)
 ├── dist/                                # Lambda zip artifacts (gitignored)
 ├── scripts/
+│   ├── build.sh                         # Build Lambda zip locally (run before terraform apply)
 │   ├── demo.sh                          # One-command full demo
 │   └── update_ppt.py                    # Presentation helper
 ├── docs/
@@ -155,11 +161,12 @@ WARN and INFO issues are logged but do not abort the pipeline. The provided `dat
 
 ```bash
 # Run all tests (58 tests: 26 analyzer + 32 DQ checker)
-PYTHONPATH=src python -m unittest tests.test_analyzer tests.test_dq_checker -v
+PYTHONPATH=src python -m unittest discover -s tests -p "test_*.py" -v
+PYTHONPATH="src:modules/adobe/src" python -m unittest discover -s modules/adobe/tests -p "test_*.py" -v
 
 # Run the analyzer locally and write output
 mkdir -p output
-PYTHONPATH=src python src/shared/search_keyword_analyzer.py data/data.sql -o output/
+PYTHONPATH="src:modules/adobe/src" python modules/adobe/src/adobe/analyzer.py data/adobe/data.sql -o output/
 ```
 
 ### AWS Deployment
@@ -167,6 +174,10 @@ PYTHONPATH=src python src/shared/search_keyword_analyzer.py data/data.sql -o out
 **Prerequisites:** AWS CLI configured, Terraform installed
 
 ```bash
+# 1. Build the Lambda zip (required before first apply or after code changes)
+./scripts/build.sh
+
+# 2. Deploy infrastructure
 cd terraform
 terraform init
 terraform apply
@@ -359,20 +370,13 @@ aws athena start-query-execution \
 
 The module in `terraform/modules/pipeline/` is reusable. To add a new source (e.g. `<source>`):
 
-1. Create `src/pipelines/<source>/__init__.py` (empty)
-2. Create `src/pipelines/<source>/handler.py` (copy adobe handler, update transformation logic)
-3. Add to `terraform/pipelines.tf`:
-```hcl
-module "<source>_pipeline" {
-  source         = "./modules/pipeline"
-  source_name    = "<source>"
-  lambda_handler = "pipelines.<source>.handler.lambda_handler"
-  bronze_columns = [ ... ]
-  gold_columns   = [ ... ]
-  # all shared vars identical to adobe_pipeline block
-}
-```
-4. `terraform apply` — Lambda, Glue tables (`<source>_bronze_masked`, `<source>_bronze_raw`, `<source>_gold`), EventBridge rule all created automatically.
+1. `cp -r modules/adobe modules/<source>` — copy the whole adobe module folder
+2. Rename `modules/<source>/src/adobe/` → `modules/<source>/src/<source>/`
+3. Update the handler import and business logic in `modules/<source>/src/<source>/analyzer.py`
+4. Update `source_name`, `lambda_handler`, `bronze_columns`, and `gold_columns` in `modules/<source>/terraform/pipeline.tf`
+5. `./scripts/build.sh && terraform -chdir=terraform apply`
+
+CI/CD automatically picks up the new module — no changes to shared Terraform files needed.
 
 ---
 
