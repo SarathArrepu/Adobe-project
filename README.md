@@ -190,7 +190,7 @@ Then trigger the pipeline:
 BUCKET=$(cd terraform && terraform output -raw s3_bucket)
 
 # Upload data file → triggers Lambda automatically
-aws s3 cp data/data.sql s3://$BUCKET/landing/adobe/data.sql
+aws s3 cp data/adobe/data.sql s3://$BUCKET/landing/adobe/data.sql
 
 # Wait ~20 seconds, then check output (partitioned by arrival date)
 aws s3 ls s3://$BUCKET/gold/ --recursive
@@ -267,7 +267,7 @@ gh pr create --title "My change" --body "Description"
 
 ## AWS Infrastructure
 
-Shared infrastructure lives in `terraform/shared.tf`. Per-pipeline resources are created by `terraform/modules/pipeline/` called from `terraform/pipelines.tf`.
+Shared infrastructure lives in `terraform/shared.tf`. Per-pipeline resources are created by `terraform/modules/pipeline/` — each pipeline's `modules/<source>/terraform/pipeline.tf` is staged into `terraform/` by CI/CD before apply.
 
 > **Full Terraform documentation** — every file, variable, resource, and module output is documented in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#terraform-structure).
 

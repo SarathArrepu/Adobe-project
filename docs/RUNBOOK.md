@@ -173,7 +173,7 @@ git pull origin main
 git checkout -b feature/SKA-123-add-bing-support
 
 # 3. Make changes, commit often
-git add src/search_keyword_analyzer.py
+git add modules/adobe/src/adobe/analyzer.py
 git commit -m "feat: add Bing search engine support"
 
 # 4. Push feature branch

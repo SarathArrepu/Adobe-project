@@ -261,7 +261,7 @@ Each call to this module creates one fully-isolated pipeline for a data source. 
 | `lambda_error_alarm_arn` | CloudWatch error alarm ARN |
 | `trigger_command` | Ready-to-run `aws s3 cp` command to trigger this pipeline |
 
-**Adding a new pipeline** = add one `module` block in `pipelines.tf` + create `src/pipelines/<source>/handler.py`. Nothing in `shared.tf`, `main.tf`, or the module itself changes.
+**Adding a new pipeline** = copy `modules/adobe/` → `modules/<source>/`, rename the inner package, update `pipeline.tf`. Nothing in `shared.tf`, `main.tf`, or the reusable module itself changes.
 
 ---
 
