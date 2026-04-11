@@ -1,11 +1,16 @@
 """
-Search Keyword Performance Analyzer
-====================================
-Processes Adobe Analytics hit-level TSV data to attribute e-commerce purchase
-revenue to the external search engine and keyword that originally referred each
-visitor.
+Adobe Analytics — Search Keyword Performance Analyzer
+======================================================
+Pipeline-specific transformation module for the Adobe Analytics hit-level pipeline.
+Processes hit-level TSV data to attribute e-commerce purchase revenue to the
+external search engine and keyword that originally referred each visitor.
 
-Supported search engines: Google, Yahoo, Bing/MSN.
+Search engine detection is **dynamic**: known engines (Google, Yahoo, Bing, etc.)
+are resolved via an O(1) flat lookup table (``_DOMAIN_PARAMS``).  Referrers from
+engines *not* in the lookup are detected automatically via ``COMMON_SEARCH_PARAMS``
+— any referrer that carries a recognised keyword query parameter is captured and
+its bare domain is used as the engine name.  This means new search engines are
+picked up without any code changes.
 
 Visitor identity is determined by IP address (the dataset contains no
 cookie/visitor-ID column).  The last external search referral for an IP is
@@ -60,22 +65,47 @@ class SearchKeywordAnalyzer:
     are instance-level mutable state modified during ``process()``.
     """
 
-    # Maps a human-readable engine name to its known hostnames and the URL
-    # query parameter that carries the search keyword.
-    SEARCH_ENGINES = {
-        "google": {
-            "domains": ["google.com", "www.google.com"],  # both bare and www variants
-            "query_params": ["q"],                         # Google uses ?q=
-        },
-        "yahoo": {
-            "domains": ["search.yahoo.com"],   # Yahoo search subdomain only
-            "query_params": ["p"],             # Yahoo uses ?p=
-        },
-        "bing": {
-            "domains": ["bing.com", "www.bing.com"],  # both bare and www variants
-            "query_params": ["q"],                    # Bing uses ?q= same as Google
-        },
+    # Flat domain → keyword-param lookup.  All keys are clean (www. already stripped).
+    # O(1) dict.get() replaces the former O(engines × domains) nested loop.
+    #
+    # To add a new engine: insert one line here — no other code change needed.
+    # To override or extend at runtime: subclass and shadow this attribute, or
+    # update it before calling process() via MyAnalyzer._DOMAIN_PARAMS["new.com"] = ["q"].
+    _DOMAIN_PARAMS: Dict[str, List[str]] = {
+        # ── Major western engines ──────────────────────────────────────────────
+        "google.com":        ["q"],
+        "bing.com":          ["q"],
+        "search.yahoo.com":  ["p"],
+        "yahoo.com":         ["p"],
+        "duckduckgo.com":    ["q"],
+        "ask.com":           ["q"],
+        "aol.com":           ["q"],
+        # ── Regional / alternative engines ────────────────────────────────────
+        "baidu.com":         ["wd", "kw", "word"],   # Baidu uses multiple params
+        "yandex.com":        ["text"],
+        "yandex.ru":         ["text"],
+        "ecosia.org":        ["q"],
+        "startpage.com":     ["q"],
+        "search.brave.com":  ["q"],
     }
+
+    # Params commonly used by search engines as the keyword carrier.
+    # Stored as a frozenset for O(1) membership tests.
+    #
+    # Used as a fallback: if the referrer domain is NOT in _DOMAIN_PARAMS, the
+    # analyzer tries each of these params.  If a value is found, the referrer's
+    # own bare domain is used as the engine name — so a brand-new engine is
+    # captured automatically without updating _DOMAIN_PARAMS.
+    COMMON_SEARCH_PARAMS: frozenset = frozenset([
+        "q",       # Google, Bing, DuckDuckGo, Ecosia, Ask, ...
+        "p",       # Yahoo
+        "query",   # many generic search implementations
+        "search",  # generic
+        "wd",      # Baidu primary
+        "text",    # Yandex
+        "kw",      # Baidu alternate, various
+        "keyword", # various
+    ])
 
     PURCHASE_EVENT = "1"  # Adobe Analytics event ID that signals a completed purchase
 
@@ -110,58 +140,66 @@ class SearchKeywordAnalyzer:
         """
         Parse a referrer URL and return the search engine domain and keyword.
 
-        Matching logic
-        --------------
-        1. Parse the URL with ``urllib.parse.urlparse``.
-        2. Strip the ``www.`` prefix from the hostname using ``removeprefix``
-           (NOT ``lstrip`` — lstrip treats its argument as a character *set*,
-           which would incorrectly strip any leading ``w`` or ``.`` characters).
-        3. Compare the normalised hostname against each engine's domain list.
-        4. If matched, extract the keyword from the first recognised query
-           parameter for that engine.
+        Two-path matching
+        -----------------
+        **Path 1 — Known engine (O(1) lookup):**
+        The cleaned referrer domain is looked up directly in ``_DOMAIN_PARAMS``.
+        If found, only the engine-specific keyword params are tried.
+
+        **Path 2 — Dynamic fallback:**
+        If the domain is NOT in ``_DOMAIN_PARAMS``, any param in
+        ``COMMON_SEARCH_PARAMS`` is tried.  This automatically captures new or
+        niche search engines without requiring a config update — the referrer's
+        own bare domain is used as the engine name in the output.
+
+        In both paths ``www.`` is stripped with ``removeprefix`` (NOT ``lstrip``,
+        which treats its argument as a character *set* and would corrupt domains
+        like ``wordpress.com`` whose host starts with ``w``).
 
         Args:
             referrer_url: Raw referrer string from the hit data.
 
         Returns:
-            ``(engine_domain, keyword)`` tuple when the referrer is a known
-            search engine with a non-empty keyword; ``None`` otherwise.
+            ``(engine_domain, keyword)`` tuple when the referrer is a known or
+            dynamically detected search engine with a non-empty keyword; ``None``
+            otherwise.
         """
         if not referrer_url or not referrer_url.strip():  # skip blank/whitespace-only referrers
             return None
 
         try:
-            parsed = urlparse(referrer_url)              # decompose URL into scheme/host/path/query
-            referrer_domain = parsed.hostname            # hostname attribute strips port number
-            if not referrer_domain:                      # e.g. relative URLs or malformed strings
+            parsed = urlparse(referrer_url)     # decompose URL into scheme/host/path/query
+            referrer_domain = parsed.hostname   # hostname strips port; None for relative URLs
+            if not referrer_domain:
                 return None
 
-            # Normalise to bare domain so "www.google.com" and "google.com" both match.
-            # removeprefix only removes the exact literal "www." prefix — nothing else.
+            # Strip www. so "www.google.com" and "google.com" resolve to the same key.
             clean_domain = referrer_domain.lower().removeprefix("www.")
 
-            for engine_name, config in self.SEARCH_ENGINES.items():  # check each configured engine
-                # Compare cleaned referrer domain against each known domain for this engine.
-                matched = any(
-                    clean_domain == d.lower().removeprefix("www.")  # normalise config domain too
-                    for d in config["domains"]
-                )
-                if not matched:  # referrer is not from this engine — try the next one
-                    continue
+            # Parse query string once — reused by both paths below.
+            query_params = parse_qs(parsed.query)  # {param: [values, ...]}
 
-                # Engine matched — now extract the keyword from the query string.
-                query_params = parse_qs(parsed.query)  # parse_qs returns {param: [values]} dict
-                for param_name in config["query_params"]:  # try each known keyword parameter
-                    if param_name in query_params:          # parameter present in URL
-                        # parse_qs returns a list; take the first value and URL-decode it.
-                        keyword = unquote(query_params[param_name][0]).strip()
-                        if keyword:  # ignore empty keyword values (e.g. ?q=)
-                            # Use the cleaned domain as the output key so "www.google.com"
-                            # and "google.com" are grouped together in the results.
-                            output_domain = clean_domain
-                            return (output_domain, keyword)  # return on first valid keyword found
+            # ── Path 1: Known engine — O(1) dict lookup ───────────────────────
+            known_params = self._DOMAIN_PARAMS.get(clean_domain)
+            if known_params is not None:
+                for param in known_params:
+                    if param in query_params:
+                        keyword = unquote(query_params[param][0]).strip()
+                        if keyword:
+                            return (clean_domain, keyword)
+                return None  # recognised engine but no usable keyword param
 
-            return None  # URL matched no configured search engine
+            # ── Path 2: Unknown engine — try common search params ─────────────
+            # Any referrer that carries a standard keyword param is treated as a
+            # search engine.  Using the referrer's own domain as the output key
+            # means new engines are captured automatically.
+            for param in self.COMMON_SEARCH_PARAMS:
+                if param in query_params:
+                    keyword = unquote(query_params[param][0]).strip()
+                    if keyword:
+                        return (clean_domain, keyword)
+
+            return None  # no search keyword found in this referrer
 
         except Exception as e:  # catch malformed URLs that urlparse cannot handle
             logger.warning(f"Failed to parse referrer URL: {referrer_url} — {e}")
@@ -220,8 +258,9 @@ class SearchKeywordAnalyzer:
         """
         if not event_list or not event_list.strip():  # blank event_list means no events fired
             return False
-        events = [e.strip() for e in event_list.split(",")]  # split and strip whitespace
-        return self.PURCHASE_EVENT in events  # exact string match — "10" won't match "1"
+        # any() short-circuits on the first match — avoids building a full list in memory.
+        # Exact token comparison ensures "10" (Cart Open) does NOT match "1" (Purchase).
+        return any(e.strip() == self.PURCHASE_EVENT for e in event_list.split(","))
 
     def run_dq_checks(self, fail_on_error: bool = True) -> "DQReport":  # noqa: F821
         """
@@ -349,11 +388,11 @@ class SearchKeywordAnalyzer:
         """
         Write the aggregated results to a tab-delimited ``.tab`` file.
 
-        File naming convention: ``YYYY-MM-DDThh-mm-ss_SearchKeywordPerformance.tab``
+        File naming convention: ``YYYY-mm-dd_SearchKeywordPerformance.tab``
 
-        The datetime (UTC) makes filenames unique even when multiple files land
-        on the same day, and maps directly to the ``dt=YYYY-MM-DD`` partition in
-        the Gold layer S3 path.
+        Date format matches the assessment spec (e.g. ``2009-10-08``).
+        The Lambda insert-overwrite strategy deletes the existing partition
+        objects before writing, so same-day reruns replace rather than append.
 
         Args:
             output_dir: Directory to create the output file in.
@@ -364,10 +403,9 @@ class SearchKeywordAnalyzer:
         """
         os.makedirs(output_dir, exist_ok=True)  # create output directory if missing
 
-        # Use datetime (not date) so multiple files arriving the same day are unique.
-        # Format: 2026-04-08T14-30-00 — colons replaced with hyphens for S3/filesystem safety.
-        dt_str   = datetime.utcnow().strftime("%Y-%m-%dT%H-%M-%S")        # UTC arrival datetime
-        filename = f"{dt_str}_SearchKeywordPerformance.tab"               # unique per invocation
+        # Spec requirement: [Date]_SearchKeywordPerformance.tab, format YYYY-mm-dd.
+        dt_str   = datetime.utcnow().strftime("%Y-%m-%d")  # UTC date of execution
+        filename = f"{dt_str}_SearchKeywordPerformance.tab"
         output_path = os.path.join(output_dir, filename)       # full path including directory
 
         results = self.get_results()  # fetch sorted results before opening the file

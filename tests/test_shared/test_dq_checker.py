@@ -19,7 +19,7 @@ Row-level checks (one test class per check):
   TestMalformedProductList     — MALFORMED_PRODUCT_LIST (WARN): too few fields, non-numeric revenue
 
 Integration:
-  TestWithProvidedDataFile     — data/data.sql must pass all ERROR-level checks with 21 rows
+  TestWithProvidedDataFile     — data/adobe/data.sql must pass all ERROR-level checks with 21 rows
 """
 
 import os       # path construction for the integration test
@@ -29,7 +29,7 @@ import tempfile # creates isolated temporary directories per test
 import shutil   # removes temp directories after each test
 
 # Insert src/ so the shared/ package is importable without installing the project
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "src"))
 
 from shared.dq_checker import DataQualityChecker, REQUIRED_COLUMNS, APPENDIX_A_COLUMNS
 
@@ -422,17 +422,17 @@ class TestMalformedProductList(_BaseCheckerTest):
 class TestWithProvidedDataFile(unittest.TestCase):
     """
     Integration tests that run the full DQ suite against the actual
-    ``data/data.sql`` sample file.
+    ``data/adobe/data.sql`` sample file.
 
     Skipped automatically when the file is absent so CI still passes on
     environments without the data file.
     """
 
     # Resolve path relative to this test file so it works from any CWD
-    DATA_FILE = os.path.join(os.path.dirname(__file__), "..", "data", "data.sql")
+    DATA_FILE = os.path.join(os.path.dirname(__file__), "..", "..", "data", "adobe", "data.sql")
 
     @unittest.skipUnless(
-        os.path.exists(os.path.join(os.path.dirname(__file__), "..", "data", "data.sql")),
+        os.path.exists(os.path.join(os.path.dirname(__file__), "..", "..", "data", "adobe", "data.sql")),
         "Provided data file not found"  # message shown when the test is skipped
     )
     def test_provided_data_passes_dq(self) -> None:
@@ -449,7 +449,7 @@ class TestWithProvidedDataFile(unittest.TestCase):
         self.assertEqual(report.total_rows, 21)  # data.sql has exactly 21 data rows
 
     @unittest.skipUnless(
-        os.path.exists(os.path.join(os.path.dirname(__file__), "..", "data", "data.sql")),
+        os.path.exists(os.path.join(os.path.dirname(__file__), "..", "..", "data", "adobe", "data.sql")),
         "Provided data file not found"
     )
     def test_provided_data_row_count(self) -> None:

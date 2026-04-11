@@ -1,9 +1,9 @@
 """
-Unit tests for SearchKeywordAnalyzer
-=====================================
+Unit tests for SearchKeywordAnalyzer (Adobe pipeline)
+======================================================
 Covers the three core methods independently and then exercises the full
 end-to-end pipeline using both a synthetic fixture and the provided
-``data/data.sql`` sample file.
+``data/adobe/data.sql`` sample file.
 
 Test classes
 ------------
@@ -11,7 +11,7 @@ TestParseSearchEngine         — referrer URL parsing (engine detection + keywo
 TestParseRevenue              — product_list revenue extraction
 TestIsPurchaseEvent           — purchase event detection from event_list
 TestEndToEnd                  — full pipeline with synthetic fixture data
-TestWithProvidedDataFile      — integration test against data/data.sql (skipped if absent)
+TestWithProvidedDataFile      — integration test against data/adobe/data.sql (skipped if absent)
 """
 
 import os       # path construction for fixture files
@@ -21,11 +21,14 @@ import unittest # standard-library test framework
 import tempfile # creates isolated temp directories so tests do not pollute each other
 import shutil   # removes temp directories after each test
 
-# Insert the src/ directory at the front of sys.path so the imports below
-# resolve to the local source tree rather than any installed package.
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
+# Project root is 3 levels up from modules/adobe/tests/
+_base = os.path.join(os.path.dirname(__file__), "..", "..", "..")
+# shared code (dq_checker, base_handler) lives in src/
+sys.path.insert(0, os.path.join(_base, "src"))
+# adobe pipeline package lives in modules/adobe/src/
+sys.path.insert(0, os.path.join(_base, "modules", "adobe", "src"))
 
-from shared.search_keyword_analyzer import SearchKeywordAnalyzer  # module under test
+from adobe.analyzer import SearchKeywordAnalyzer  # module under test
 
 
 class TestParseSearchEngine(unittest.TestCase):
@@ -308,13 +311,12 @@ class TestEndToEnd(unittest.TestCase):
         output_path = analyzer.write_output(self.output_dir)  # write to temp output dir
 
         self.assertTrue(os.path.exists(output_path))                    # file was created
-        # Filename must end with the standard suffix; the datetime prefix is variable
+        # Spec: filename = YYYY-mm-dd_SearchKeywordPerformance.tab
         self.assertTrue(output_path.endswith("_SearchKeywordPerformance.tab"))  # naming convention
-        # Verify datetime prefix format: YYYY-MM-DDThh-mm-ss (19 chars before the underscore)
         filename = os.path.basename(output_path)
-        dt_prefix = filename.split("_SearchKeywordPerformance")[0]  # e.g. "2026-04-08T14-30-00"
-        self.assertEqual(len(dt_prefix), 19, f"Expected 19-char datetime prefix, got: {dt_prefix}")
-        self.assertRegex(dt_prefix, r"^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}$")  # strict format check
+        dt_prefix = filename.split("_SearchKeywordPerformance")[0]  # e.g. "2026-04-09"
+        self.assertEqual(len(dt_prefix), 10, f"Expected 10-char date prefix (YYYY-mm-dd), got: {dt_prefix}")
+        self.assertRegex(dt_prefix, r"^\d{4}-\d{2}-\d{2}$")  # strict YYYY-mm-dd format
 
         # Open the output and verify structure
         with open(output_path, "r") as f:
@@ -349,7 +351,7 @@ class TestEndToEnd(unittest.TestCase):
 
 class TestWithProvidedDataFile(unittest.TestCase):
     """
-    Integration tests that run against the actual ``data/data.sql`` sample.
+    Integration tests that run against the actual ``data/adobe/data.sql`` sample.
 
     Skipped automatically when the file is not found so the test suite still
     passes in environments that only have the source code (e.g. fresh clones).
@@ -362,7 +364,7 @@ class TestWithProvidedDataFile(unittest.TestCase):
     """
 
     # Resolve path relative to this test file so it works from any working directory
-    DATA_FILE = os.path.join(os.path.dirname(__file__), "..", "data", "data.sql")
+    DATA_FILE = os.path.join(os.path.dirname(__file__), "..", "..", "..", "data", "adobe", "data.sql")
 
     def setUp(self) -> None:
         """Create a temp directory to hold the output file written during tests."""
@@ -373,8 +375,8 @@ class TestWithProvidedDataFile(unittest.TestCase):
         shutil.rmtree(self.temp_dir)
 
     @unittest.skipUnless(
-        os.path.exists(os.path.join(os.path.dirname(__file__), "..", "data", "data.sql")),
-        "Provided data file not found in data/ directory"  # skip message shown in test output
+        os.path.exists(os.path.join(os.path.dirname(__file__), "..", "..", "..", "data", "adobe", "data.sql")),
+        "Provided data file not found in data/adobe/ directory"  # skip message shown in test output
     )
     def test_provided_data(self) -> None:
         """

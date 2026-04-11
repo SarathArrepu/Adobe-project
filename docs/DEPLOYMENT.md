@@ -51,6 +51,9 @@ python3 --version      # >= 3.8
 ## Step 2: Deploy Infrastructure
 
 ```bash
+# Build the Lambda zip first (stages shared + module source, outputs dist/lambda.zip)
+./scripts/build.sh
+
 cd terraform
 terraform init
 terraform plan        # Review what will be created
@@ -60,7 +63,7 @@ terraform apply       # Type 'yes' to confirm
 This creates (all free tier eligible except KMS at ~$1/month):
 
 - S3 bucket with medallion prefixes (`landing/`, `bronze/`, `gold/`)
-- Lambda function (`pipelines.adobe.handler.lambda_handler`, Python 3.12, 512MB, 5min timeout)
+- Lambda function (`adobe.handler.lambda_handler`, Python 3.12, 512MB, 5min timeout)
 - IAM roles: Lambda execution (per pipeline), Admin (PII access), Developer (masked + gold)
 - Two KMS keys: standard data key + dedicated PII key
 - EventBridge rule routing `landing/adobe/` uploads to the Adobe Lambda
@@ -76,10 +79,10 @@ This creates (all free tier eligible except KMS at ~$1/month):
 | `main.tf` | Provider + backend only |
 | `variables.tf` | All variable declarations |
 | `shared.tf` | S3, KMS, IAM, Glue DB, Athena (shared across all pipelines) |
-| `pipelines.tf` | Module call per pipeline |
 | `observability.tf` | CloudWatch dashboard, Budgets, QuickSight |
 | `outputs.tf` | All outputs |
 | `modules/pipeline/` | Reusable module: Lambda + IAM + EventBridge + Glue + Crawler |
+| `modules/adobe/terraform/pipeline.tf` | Adobe pipeline config (staged to `terraform/` by CI/CD) |
 
 ---
 
@@ -146,9 +149,10 @@ cd terraform && terraform destroy -auto-approve
 
 ```bash
 # Run all 58 unit tests (26 analyzer + 32 DQ checker)
-PYTHONPATH=src python3 -m unittest tests.test_analyzer tests.test_dq_checker -v
+PYTHONPATH=src python3 -m unittest discover -s tests -p "test_*.py" -v
+PYTHONPATH="src:modules/adobe/src" python3 -m unittest discover -s modules/adobe/tests -p "test_*.py" -v
 
 # Run the analyzer locally against the sample data
 mkdir -p output
-PYTHONPATH=src python3 src/shared/search_keyword_analyzer.py data/data.sql -o output/
+PYTHONPATH="src:modules/adobe/src" python3 modules/adobe/src/adobe/analyzer.py data/adobe/data.sql -o output/
 ```
