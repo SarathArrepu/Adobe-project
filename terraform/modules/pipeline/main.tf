@@ -288,20 +288,9 @@ resource "aws_glue_catalog_table" "gold" {
   parameters = {
     "EXTERNAL"       = "TRUE"
     "classification" = "tsv"
-    # Hive-style dt= partitioning; Athena prunes partitions on WHERE dt = '...' predicates
-    "partition_filtering.enabled" = "true"
-  }
-
-  # dt STRING is the Hive-style arrival-date partition column.
-  # Objects live at gold/dt=YYYY-MM-DD/<file>.tab; Athena infers the value from the path.
-  partition_keys {
-    name    = "dt"
-    type    = "string"
-    comment = "Arrival date (UTC) of the Lambda invocation — used for insert-overwrite partitioning"
   }
 
   storage_descriptor {
-    # Root prefix only — Athena appends dt=<value>/ automatically for partition queries.
     location      = "s3://${var.s3_bucket_id}/gold/"
     input_format  = local.input_format
     output_format = local.output_format
@@ -322,81 +311,14 @@ resource "aws_glue_catalog_table" "gold" {
   }
 }
 
-# ---- Glue Crawler (daily schema evolution) ----
-# Crawls masked bronze + gold. Skips raw (PII KMS key, same schema as masked).
-
-resource "aws_iam_role" "glue_crawler_role" {
-  name = "${var.project_name}-crawler-${var.source_name}-${var.environment}"
-
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Action    = "sts:AssumeRole"
-      Effect    = "Allow"
-      Principal = { Service = "glue.amazonaws.com" }
-    }]
-  })
-}
-
-resource "aws_iam_role_policy_attachment" "glue_service" {
-  role       = aws_iam_role.glue_crawler_role.name
-  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSGlueServiceRole"
-}
-
-resource "aws_iam_role_policy" "glue_crawler_s3" {
-  name = "s3-schema-discovery"
-  role = aws_iam_role.glue_crawler_role.id
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Effect = "Allow"
-        Action = ["s3:GetObject", "s3:ListBucket"]
-        Resource = [
-          var.s3_bucket_arn,
-          "${var.s3_bucket_arn}/bronze/masked/*",
-          "${var.s3_bucket_arn}/gold/*",
-        ]
-      },
-      {
-        Effect   = "Allow"
-        Action   = ["kms:Decrypt", "kms:GenerateDataKey", "kms:DescribeKey"]
-        Resource = var.kms_key_arn
-      },
-    ]
-  })
-}
-
-resource "aws_glue_crawler" "schema_discovery" {
-  name          = "${local.name_prefix}-schema"
-  role          = aws_iam_role.glue_crawler_role.arn
-  database_name = local.glue_db
-  schedule      = "cron(0 2 * * ? *)"
-
-  s3_target {
-    path       = "s3://${var.s3_bucket_id}/bronze/masked/"
-    exclusions = ["metadata/**", "**.json", "**.avro"]
-  }
-
-  s3_target {
-    path       = "s3://${var.s3_bucket_id}/gold/"
-    exclusions = ["metadata/**", "**.json", "**.avro"]
-  }
-
-  schema_change_policy {
-    update_behavior = "UPDATE_IN_DATABASE"
-    delete_behavior = "LOG"
-  }
-
-  configuration = jsonencode({
-    Version = 1.0
-    CrawlerOutput = {
-      Partitions = { AddOrUpdateBehavior = "InheritFromTable" }
-      Tables     = { AddOrUpdateBehavior = "MergeNewColumns" }
-    }
-    Grouping = {
-      TableGroupingPolicy = "CombineCompatibleSchemas"
-    }
-  })
-}
+# Glue Crawler removed.
+#
+# Schemas for all three tables are fully defined above in Terraform — no crawler
+# needed for schema discovery. Partition discovery for the gold table is handled
+# by Athena partition projection (see aws_glue_catalog_table.gold parameters),
+# which auto-generates dt= partition values from a date range without any crawl.
+#
+# If a crawler is re-introduced for a future use case, scope it to a single
+# source-prefixed path (e.g. gold/adobe/) and set TableLevelConfiguration=1 in
+# the configuration JSON to prevent individual .tab files and dt= folders from
+# being created as separate tables.

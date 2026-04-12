@@ -251,7 +251,6 @@ Glue database: `{environment}_{project}` (underscores, derived dynamically via `
 | CloudWatch Log Group | `/aws/lambda/{lambda-name}` | `/aws/lambda/adobe-adobe-stg` |
 | Glue Database | `{env}_{project}` (underscores) | `stg_adobe` |
 | Glue Tables | `{source}_{layer}` | `adobe_gold`, `adobe_bronze_masked`, `adobe_bronze_raw` |
-| Glue Crawler | `{project}-{source}-{env}-schema` | `adobe-adobe-stg-schema` |
 | Athena Workgroup | `{project}-{env}` | `adobe-stg` |
 
 ### File and Directory Naming
@@ -431,7 +430,6 @@ This automatically creates (resource names follow the `{project}-{source}-{env}`
 - IAM role: `adobe-lambda-<source>-stg`
 - EventBridge rule: triggers on `landing/<source>/` uploads
 - Glue tables: `<source>_bronze_masked`, `<source>_bronze_raw`, `<source>_gold` in `stg_adobe`
-- Glue Crawler: `adobe-<source>-stg-schema`
 - CloudWatch log group + error alarm
 
 ### Step 4 — Test manually
