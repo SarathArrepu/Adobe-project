@@ -28,10 +28,6 @@ output "gold_table" {
   value       = aws_glue_catalog_table.gold.name
 }
 
-output "glue_crawler_name" {
-  description = "Name of the Glue Crawler for automatic schema evolution."
-  value       = aws_glue_crawler.schema_discovery.name
-}
 
 output "lambda_error_alarm_arn" {
   description = "ARN of the CloudWatch alarm for Lambda errors."
