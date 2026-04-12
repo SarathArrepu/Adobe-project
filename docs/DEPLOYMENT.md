@@ -70,7 +70,6 @@ This creates (all free tier eligible except KMS at ~$1/month):
 - CloudWatch log group + error alarm
 - Athena workgroup with cost control (100 MB scan limit)
 - Glue database `stg_adobe` + three Glue tables (`adobe_bronze_masked`, `adobe_bronze_raw`, `adobe_gold`)
-- Glue Crawler for daily schema evolution
 
 **Terraform files by concern:**
 
@@ -81,7 +80,7 @@ This creates (all free tier eligible except KMS at ~$1/month):
 | `shared.tf` | S3, KMS, IAM, Glue DB, Athena (shared across all pipelines) |
 | `observability.tf` | CloudWatch dashboard, Budgets, QuickSight |
 | `outputs.tf` | All outputs |
-| `modules/pipeline/` | Reusable module: Lambda + IAM + EventBridge + Glue + Crawler |
+| `modules/pipeline/` | Reusable module: Lambda + IAM + EventBridge + Glue (partition projection) |
 | `modules/adobe/terraform/pipeline.tf` | Adobe pipeline config (staged to `terraform/` by CI/CD) |
 
 ---

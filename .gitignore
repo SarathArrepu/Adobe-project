@@ -12,3 +12,5 @@ notebooks/.ipynb_checkpoints/
 .env
 .aws/
 terraform/terraform.tfvars
+# Derived pipeline.tf copies staged by CI (modules/*/terraform/pipeline.tf → terraform/*_pipeline.tf)
+terraform/*_pipeline.tf

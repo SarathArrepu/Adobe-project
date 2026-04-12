@@ -59,8 +59,7 @@
 │  │  ├── adobe_bronze_masked (dev accessible)    │                  │
 │  │  └── adobe_bronze_raw    (admin only)        │                  │
 │  │                                              │                  │
-│  │  Glue Crawler (daily 2am UTC)                │                  │
-│  │  └── Auto-detects new columns/tables         │                  │
+│  │  adobe_gold (flat external TSV table)         │                  │
 │  └──────────────────┬───────────────────────────┘                  │
 │                     ▼                                               │
 │  ┌──────────────────────────────────┐                              │
@@ -221,8 +220,6 @@ Each call to this module creates one fully-isolated pipeline for a data source. 
 | `aws_glue_catalog_table.bronze_masked` | `{source}_bronze_masked` | Hive external TSV table — SHA-256 hashed PII, developer accessible |
 | `aws_glue_catalog_table.bronze_raw` | `{source}_bronze_raw` | Hive external TSV table — plaintext PII, admin only, tagged `data_classification=restricted-pii` |
 | `aws_glue_catalog_table.gold` | `{source}_gold` | Hive external TSV table — aggregated output, no PII |
-| `aws_iam_role.glue_crawler_role` | `{project}-crawler-{source}-{env}` | Glue Crawler IAM role |
-| `aws_glue_crawler.schema_discovery` | `{project}-{source}-{env}-schema` | Crawls masked bronze + gold daily at 02:00 UTC for automatic schema evolution |
 
 #### `modules/pipeline/variables.tf` — Module inputs
 
@@ -257,7 +254,6 @@ Each call to this module creates one fully-isolated pipeline for a data source. 
 | `bronze_masked_table` | Glue table name for masked bronze |
 | `bronze_raw_table` | Glue table name for raw bronze |
 | `gold_table` | Glue table name for gold |
-| `glue_crawler_name` | Glue Crawler name |
 | `lambda_error_alarm_arn` | CloudWatch error alarm ARN |
 | `trigger_command` | Ready-to-run `aws s3 cp` command to trigger this pipeline |
 
@@ -392,7 +388,6 @@ CI/CD auto-discovers the new module (loops `modules/*/`). No changes to shared T
 | EventBridge Rule | `adobe-adobe-stg-landing-upload` | Routes S3 events to Lambda |
 | Glue Database | `stg_adobe` | Schema registry |
 | Glue Tables | `adobe_bronze_masked`, `adobe_bronze_raw`, `adobe_gold` | Athena queryable |
-| Glue Crawler | `adobe-adobe-stg-schema` | Daily schema evolution |
 | Athena Workgroup | `adobe-stg` | Query engine (100 MB scan limit) |
 | CloudWatch Dashboard | `adobe-stg` | Ops metrics |
 | AWS Budgets | `adobe-monthly-stg` | Cost alerts at $40/$50 |

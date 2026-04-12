@@ -45,7 +45,6 @@ output "adobe_pipeline" {
     bronze_masked   = module.adobe_pipeline.bronze_masked_table
     bronze_raw      = module.adobe_pipeline.bronze_raw_table
     gold            = module.adobe_pipeline.gold_table
-    glue_crawler    = module.adobe_pipeline.glue_crawler_name
     trigger_command = "aws s3 cp data/data.sql s3://${aws_s3_bucket.data_lake.id}/landing/adobe/data.sql"
   }
 }
