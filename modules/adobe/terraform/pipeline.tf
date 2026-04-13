@@ -39,23 +39,23 @@ module "adobe_pipeline" {
   lambda_timeout_seconds = var.lambda_timeout_seconds
   lambda_memory_mb       = var.lambda_memory_mb
 
-  # Bronze columns — hit-level TSV schema Lambda writes.
-  # Types follow Appendix A exactly: Int(11) → int, datetime() → timestamp,
-  # Varchar(n) → varchar(n), text → string (unbounded, no length in spec).
+  # Bronze columns — hit-level TSV schema, column order matches source file exactly.
+  # All types are string to avoid length truncation (SHA-256 hashes are 71 chars,
+  # exceeding any varchar limit that would fit a raw IP).
   # ip and user_agent are PII: masked table hashes them, raw table keeps plaintext.
   bronze_columns = [
-    { name = "hit_time_gmt", type = "int", comment = "Unix timestamp (Int 11)" },
-    { name = "date_time", type = "timestamp", comment = "Hit datetime in report suite timezone" },
-    { name = "ip", type = "varchar(20)", comment = "PII-pseudonymized: sha256 hash of original IP" },
-    { name = "user_agent", type = "string", comment = "PII-pseudonymized: sha256 hash of original user agent" },
-    { name = "event_list", type = "string", comment = "" },
-    { name = "geo_city", type = "varchar(32)", comment = "" },
-    { name = "geo_region", type = "varchar(32)", comment = "" },
-    { name = "geo_country", type = "varchar(4)", comment = "" },
-    { name = "pagename", type = "varchar(100)", comment = "" },
-    { name = "page_url", type = "varchar(255)", comment = "" },
-    { name = "product_list", type = "string", comment = "" },
-    { name = "referrer", type = "varchar(255)", comment = "" },
+    { name = "hit_time_gmt", type = "int",       comment = "Unix timestamp (Int 11)" },
+    { name = "date_time",    type = "timestamp",  comment = "Hit datetime in report suite timezone" },
+    { name = "user_agent",   type = "string",     comment = "PII — sha256 hash in masked layer, plaintext in raw" },
+    { name = "ip",           type = "string",     comment = "PII — sha256 hash in masked layer, plaintext in raw" },
+    { name = "event_list",   type = "string",     comment = "Comma-separated Adobe Analytics event IDs; '1' = purchase" },
+    { name = "geo_city",     type = "string",     comment = "" },
+    { name = "geo_region",   type = "string",     comment = "" },
+    { name = "geo_country",  type = "string",     comment = "" },
+    { name = "pagename",     type = "string",     comment = "" },
+    { name = "page_url",     type = "string",     comment = "" },
+    { name = "product_list", type = "string",     comment = "Format: Category;Name;Qty;Revenue;CustomEvent;MerchEVar" },
+    { name = "referrer",     type = "string",     comment = "" },
   ]
 
   # Gold columns — aggregated output, no PII

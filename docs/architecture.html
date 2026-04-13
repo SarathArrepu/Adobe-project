@@ -23,6 +23,7 @@
     .badge-yellow { background: #713f12; color: #fde047; }
     .badge-red    { background: #7f1d1d; color: #fca5a5; }
     .badge-blue   { background: #1e3a5f; color: #93c5fd; }
+    .badge-purple { background: #3b1f6e; color: #c4b5fd; }
 
     /* Flow diagram */
     .flow { display: flex; align-items: flex-start; gap: 0; overflow-x: auto; padding-bottom: 8px; }
@@ -33,6 +34,7 @@
     .flow-box.storage  { border-color: #10b981; }
     .flow-box.catalog  { border-color: #06b6d4; }
     .flow-box.monitor  { border-color: #f97316; }
+    .flow-box.cicd     { border-color: #a855f7; }
     .flow-box .box-title { font-size: 0.8rem; font-weight: 700; color: #f8fafc; }
     .flow-box .box-sub   { font-size: 0.7rem; color: #64748b; margin-top: 3px; }
     .flow-arrow { display: flex; align-items: center; padding: 0 8px; color: #4b5563; font-size: 1.2rem; padding-top: 18px; }
@@ -49,6 +51,7 @@
     .pill-red    { background: #7f1d1d; color: #fca5a5; }
     .pill-yellow { background: #713f12; color: #fde047; }
     .pill-blue   { background: #1e3a5f; color: #93c5fd; }
+    .pill-purple { background: #3b1f6e; color: #c4b5fd; }
 
     /* Security matrix */
     .sec-table td, .sec-table th { text-align: center; }
@@ -60,34 +63,56 @@
     pre { background: #1e2130; border: 1px solid #2d3452; border-radius: 8px; padding: 16px; font-size: 0.78rem; overflow-x: auto; color: #94a3b8; line-height: 1.6; margin-bottom: 16px; }
     code { font-family: "JetBrains Mono", "Fira Code", monospace; }
 
+    /* CI/CD job pipeline */
+    .ci-flow { display: flex; align-items: center; gap: 0; overflow-x: auto; padding: 16px 0 8px; }
+    .ci-job { background: #1e2130; border: 1px solid #2d3452; border-radius: 8px; padding: 14px 18px; min-width: 150px; text-align: center; }
+    .ci-job.green  { border-color: #10b981; }
+    .ci-job.blue   { border-color: #6366f1; }
+    .ci-job.yellow { border-color: #f59e0b; }
+    .ci-job.purple { border-color: #a855f7; }
+    .ci-job .job-title { font-size: 0.8rem; font-weight: 700; color: #f8fafc; }
+    .ci-job .job-sub   { font-size: 0.7rem; color: #64748b; margin-top: 4px; line-height: 1.4; }
+    .ci-arrow { color: #4b5563; font-size: 1.2rem; padding: 0 10px; }
+    .ci-split { display: flex; flex-direction: column; gap: 10px; }
+
+    /* Module tree */
+    .module-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; }
+    .module-card { background: #1e2130; border: 1px solid #2d3452; border-radius: 10px; padding: 14px 16px; }
+    .module-card .mod-title { font-size: 0.85rem; font-weight: 700; color: #c4b5fd; margin-bottom: 6px; font-family: "JetBrains Mono", monospace; }
+    .module-card .mod-desc  { font-size: 0.75rem; color: #64748b; margin-bottom: 8px; }
+    .module-card ul { list-style: none; padding: 0; }
+    .module-card ul li { font-size: 0.72rem; color: #94a3b8; padding: 2px 0; }
+    .module-card ul li::before { content: "→ "; color: #4b5563; }
+
     .section { background: #141722; border: 1px solid #1e2536; border-radius: 12px; padding: 20px 24px; margin-bottom: 20px; }
+    .note { font-size: 0.78rem; color: #64748b; margin-bottom: 12px; }
     footer { margin-top: 32px; text-align: center; font-size: 0.75rem; color: #334155; }
   </style>
 </head>
 <body>
 
 <h1>Search Keyword Performance Analyzer</h1>
-<p class="subtitle">Adobe Data Engineering · AWS Architecture · Quick Access Links</p>
+<p class="subtitle">Adobe Data Engineering · AWS Medallion Architecture · Modular Pipeline Design</p>
 
 <!-- ══════════════════════════════════════════════════════════ -->
 <h2>⚡ Quick Access — AWS Console</h2>
 <div class="links-grid">
 
-  <a class="link-card" href="https://s3.console.aws.amazon.com/s3/buckets/search-keyword-analyzer-dev-107422471374" target="_blank">
+  <a class="link-card" href="https://s3.console.aws.amazon.com/s3/buckets/adobe-stg" target="_blank">
     <div class="icon">🪣</div>
     <div class="name">S3 Data Lake</div>
-    <div class="desc">Browse landing / bronze / gold layers</div>
+    <div class="desc">adobe-stg-&lt;account-id&gt; · landing / bronze / gold</div>
     <span class="badge badge-green">Active</span>
   </a>
 
-  <a class="link-card" href="https://us-east-1.console.aws.amazon.com/lambda/home?region=us-east-1#/functions/search-keyword-analyzer-adobe-dev" target="_blank">
+  <a class="link-card" href="https://us-east-1.console.aws.amazon.com/lambda/home?region=us-east-1#/functions/adobe-adobe-stg" target="_blank">
     <div class="icon">λ</div>
     <div class="name">Lambda (Adobe)</div>
-    <div class="desc">adobe_handler · Python 3.12 · 300s timeout</div>
+    <div class="desc">adobe-adobe-stg · Python 3.12 · 512 MB · 300s</div>
     <span class="badge badge-blue">Pipeline</span>
   </a>
 
-  <a class="link-card" href="https://us-east-1.console.aws.amazon.com/cloudwatch/home?region=us-east-1#dashboards:name=search-keyword-analyzer-dev" target="_blank">
+  <a class="link-card" href="https://us-east-1.console.aws.amazon.com/cloudwatch/home?region=us-east-1#dashboards:name=adobe-stg" target="_blank">
     <div class="icon">📊</div>
     <div class="name">CloudWatch Dashboard</div>
     <div class="desc">Lambda health · Athena cost · KMS calls</div>
@@ -97,70 +122,70 @@
   <a class="link-card" href="https://us-east-1.console.aws.amazon.com/athena/home?region=us-east-1#/query-editor" target="_blank">
     <div class="icon">🔍</div>
     <div class="name">Athena Query Editor</div>
-    <div class="desc">Workgroup: search-keyword-analyzer-dev</div>
+    <div class="desc">Workgroup: adobe-stg · Database: stg_adobe</div>
     <span class="badge badge-blue">Analytics</span>
   </a>
 
-  <a class="link-card" href="https://us-east-1.console.aws.amazon.com/glue/home?region=us-east-1#/v2/data-catalog/databases/view/search_keyword_analyzer_dev" target="_blank">
+  <a class="link-card" href="https://us-east-1.console.aws.amazon.com/glue/home?region=us-east-1#/v2/data-catalog/databases/view/stg_adobe" target="_blank">
     <div class="icon">🗄️</div>
     <div class="name">Glue Data Catalog</div>
-    <div class="desc">Database: search_keyword_analyzer_dev</div>
+    <div class="desc">Database: stg_adobe · 3 tables (no crawler)</div>
     <span class="badge badge-blue">Catalog</span>
   </a>
 
-  <a class="link-card" href="https://us-east-1.console.aws.amazon.com/glue/home?region=us-east-1#/v2/data-catalog/crawlers" target="_blank">
-    <div class="icon">🕷️</div>
-    <div class="name">Glue Crawler</div>
-    <div class="desc">Daily schema discovery · 2am UTC</div>
-    <span class="badge badge-green">Scheduled</span>
-  </a>
-
-  <a class="link-card" href="https://us-east-1.console.aws.amazon.com/cloudwatch/home?region=us-east-1#alarmsV2:alarm/search-keyword-analyzer-adobe-dev-errors" target="_blank">
+  <a class="link-card" href="https://us-east-1.console.aws.amazon.com/cloudwatch/home?region=us-east-1#alarmsV2:alarm/adobe-adobe-stg-errors" target="_blank">
     <div class="icon">🚨</div>
     <div class="name">Error Alarm</div>
-    <div class="desc">Triggers on any Lambda error</div>
+    <div class="desc">adobe-adobe-stg-errors · triggers on any Lambda error</div>
     <span class="badge badge-red">Alarm</span>
+  </a>
+
+  <a class="link-card" href="https://us-east-1.console.aws.amazon.com/events/home?region=us-east-1#/rules" target="_blank">
+    <div class="icon">⚡</div>
+    <div class="name">EventBridge Rules</div>
+    <div class="desc">Routes landing/adobe/ uploads → Lambda</div>
+    <span class="badge badge-blue">Trigger</span>
   </a>
 
   <a class="link-card" href="https://us-east-1.console.aws.amazon.com/billing/home#/budgets" target="_blank">
     <div class="icon">💰</div>
     <div class="name">AWS Budgets</div>
-    <div class="desc">Alert at $40 (80%) and $50 (forecast)</div>
+    <div class="desc">Alert at 80% and 100% of $50/mo</div>
     <span class="badge badge-yellow">Cost</span>
   </a>
 
   <a class="link-card" href="https://us-east-1.console.aws.amazon.com/kms/home?region=us-east-1#/kms/keys" target="_blank">
     <div class="icon">🔑</div>
     <div class="name">KMS Keys</div>
-    <div class="desc">data-key + pii-key · auto-rotation on</div>
+    <div class="desc">alias/adobe-stg · alias/adobe-pii-stg · auto-rotation on</div>
     <span class="badge badge-red">Security</span>
-  </a>
-
-  <a class="link-card" href="https://us-east-1.console.aws.amazon.com/events/home?region=us-east-1#/rules" target="_blank">
-    <div class="icon">⚡</div>
-    <div class="name">EventBridge Rules</div>
-    <div class="desc">Routes S3 uploads to pipeline Lambdas</div>
-    <span class="badge badge-blue">Trigger</span>
   </a>
 
   <a class="link-card" href="https://us-east-1.console.aws.amazon.com/iam/home?region=us-east-1#/roles" target="_blank">
     <div class="icon">🛡️</div>
     <div class="name">IAM Roles</div>
-    <div class="desc">admin · developer · lambda-adobe</div>
+    <div class="desc">admin · developer · lambda-adobe execution</div>
     <span class="badge badge-red">Security</span>
   </a>
 
-  <a class="link-card" href="https://us-east-1.console.aws.amazon.com/cloudwatch/home?region=us-east-1#logsV2:log-groups/log-group/$252Faws$252Flambda$252Fsearch-keyword-analyzer-adobe-dev" target="_blank">
+  <a class="link-card" href="https://us-east-1.console.aws.amazon.com/cloudwatch/home?region=us-east-1#logsV2:log-groups/log-group/$252Faws$252Flambda$252Fadobe-adobe-stg" target="_blank">
     <div class="icon">📋</div>
     <div class="name">Lambda Logs</div>
-    <div class="desc">/aws/lambda/search-keyword-analyzer-adobe-dev</div>
+    <div class="desc">/aws/lambda/adobe-adobe-stg · 14-day retention</div>
     <span class="badge badge-yellow">Monitor</span>
+  </a>
+
+  <a class="link-card" href="https://github.com/SarathArrepu/Adobe-project/actions" target="_blank">
+    <div class="icon">🤖</div>
+    <div class="name">GitHub Actions</div>
+    <div class="desc">CI/CD · test → package → plan/deploy</div>
+    <span class="badge badge-purple">CI/CD</span>
   </a>
 
 </div>
 
 <!-- ══════════════════════════════════════════════════════════ -->
-<h2>🔄 Pipeline Flow</h2>
+<h2>🔄 Pipeline Flow (Runtime)</h2>
 <div class="section">
   <div class="flow">
     <div class="flow-step">
@@ -173,14 +198,14 @@
     <div class="flow-step">
       <div class="flow-box trigger">
         <div class="box-title">EventBridge</div>
-        <div class="box-sub">Object Created rule<br/>prefix filter per source</div>
+        <div class="box-sub">Object Created rule<br/>prefix: landing/adobe/</div>
       </div>
     </div>
     <div class="flow-arrow">→</div>
     <div class="flow-step">
       <div class="flow-box compute">
         <div class="box-title">Lambda</div>
-        <div class="box-sub">adobe_handler.py<br/>Python 3.12 · 512 MB</div>
+        <div class="box-sub">adobe.handler<br/>Python 3.12 · 512 MB</div>
       </div>
     </div>
     <div class="flow-arrow">→</div>
@@ -194,7 +219,7 @@
     <div class="flow-step">
       <div class="flow-box catalog">
         <div class="box-title">Glue Catalog</div>
-        <div class="box-sub">3 Hive tables<br/>Crawler: daily 2am</div>
+        <div class="box-sub">3 static external tables<br/>schemas defined in TF</div>
       </div>
     </div>
     <div class="flow-arrow">→</div>
@@ -205,6 +230,160 @@
       </div>
     </div>
   </div>
+  <p style="font-size:0.75rem;color:#4b5563;margin-top:12px;">
+    Note: Glue Crawler removed — all three table schemas (bronze_raw, bronze_masked, gold) are fully defined in Terraform. No schema discovery needed.
+  </p>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════ -->
+<h2>🤖 CI/CD Pipeline (GitHub Actions)</h2>
+<div class="section">
+  <p class="note">Triggered on every push to <code>main</code> and every pull request. Workflow: <a href="https://github.com/SarathArrepu/Adobe-project/blob/main/.github/workflows/ci-cd.yml" target="_blank" style="color:#6366f1;">.github/workflows/ci-cd.yml</a></p>
+  <div class="ci-flow">
+    <div class="ci-job green">
+      <div class="job-title">1 · Unit Tests</div>
+      <div class="job-sub">
+        Shared tests (src/)<br/>
+        Module tests (modules/*/tests/)<br/>
+        Local pipeline dry-run
+      </div>
+    </div>
+    <div class="ci-arrow">→</div>
+    <div class="ci-job blue">
+      <div class="job-title">2 · Package Lambda</div>
+      <div class="job-sub">
+        Copies shared/ + all modules/<br/>
+        Zips → dist/lambda.zip<br/>
+        Uploads as GitHub artifact
+      </div>
+    </div>
+    <div class="ci-arrow">→</div>
+    <div class="ci-split">
+      <div class="ci-job yellow">
+        <div class="job-title">3a · Terraform Plan</div>
+        <div class="job-sub">
+          PR only · fmt check + validate<br/>
+          Posts plan diff as PR comment<br/>
+          No AWS changes
+        </div>
+      </div>
+      <div class="ci-job purple">
+        <div class="job-title">3b · Deploy to AWS</div>
+        <div class="job-sub">
+          main branch only<br/>
+          terraform apply -auto-approve<br/>
+          Shows terraform output
+        </div>
+      </div>
+    </div>
+  </div>
+  <p style="font-size:0.75rem;color:#4b5563;margin-top:16px;">
+    Staging step: CI copies <code>modules/*/terraform/pipeline.tf</code> → <code>terraform/&lt;module&gt;_pipeline.tf</code> before plan/apply.
+    These derived files are gitignored.
+  </p>
+
+  <h2 style="margin-top:20px;">CI/CD Gates per Job</h2>
+  <table>
+    <thead>
+      <tr><th>Job</th><th>Trigger</th><th>Gate</th><th>Artifact</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>Unit Tests</strong></td>
+        <td>All events</td>
+        <td>All tests pass (unittest)</td>
+        <td>—</td>
+      </tr>
+      <tr>
+        <td><strong>Package Lambda</strong></td>
+        <td>After tests pass</td>
+        <td>zip build succeeds</td>
+        <td><code>lambda-package-&lt;sha&gt;</code></td>
+      </tr>
+      <tr>
+        <td><strong>Terraform Plan</strong></td>
+        <td>Pull Request only</td>
+        <td>fmt + validate pass; plan posted to PR</td>
+        <td>tfplan comment on PR</td>
+      </tr>
+      <tr>
+        <td><strong>Deploy</strong></td>
+        <td>Push to main / workflow_dispatch</td>
+        <td>apply succeeds; outputs shown</td>
+        <td>Live AWS infra</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════ -->
+<h2>🏗️ Terraform Module Structure</h2>
+<div class="section">
+  <p class="note">Infrastructure is split into shared resources (one per account) and a reusable pipeline module (one instance per data source).</p>
+  <div class="module-grid">
+    <div class="module-card">
+      <div class="mod-title">terraform/shared.tf</div>
+      <div class="mod-desc">Shared infrastructure — created once, used by all pipelines</div>
+      <ul>
+        <li>S3 data lake bucket (medallion layout)</li>
+        <li>KMS data key + PII key (auto-rotation)</li>
+        <li>IAM admin role + developer role</li>
+        <li>S3 bucket policy (deny raw PII to developer)</li>
+        <li>Glue database (stg_adobe)</li>
+        <li>Athena workgroup (adobe-stg, 100 MB limit)</li>
+      </ul>
+    </div>
+    <div class="module-card">
+      <div class="mod-title">terraform/modules/pipeline/</div>
+      <div class="mod-desc">Reusable module — instantiated once per data source</div>
+      <ul>
+        <li>IAM Lambda execution role (least-privilege)</li>
+        <li>Lambda function + EventBridge trigger</li>
+        <li>CloudWatch log group + error alarm</li>
+        <li>Glue tables: bronze_masked, bronze_raw, gold</li>
+        <li>S3 insert-overwrite permission for gold/</li>
+      </ul>
+    </div>
+    <div class="module-card">
+      <div class="mod-title">modules/adobe/terraform/pipeline.tf</div>
+      <div class="mod-desc">Adobe-specific pipeline config — owned by the module, staged by CI</div>
+      <ul>
+        <li>module "adobe_pipeline" → calls modules/pipeline</li>
+        <li>source_name = "adobe"</li>
+        <li>lambda_handler = "adobe.handler.lambda_handler"</li>
+        <li>12 bronze columns (hit-level TSV schema)</li>
+        <li>3 gold columns (aggregated, no PII)</li>
+      </ul>
+    </div>
+    <div class="module-card">
+      <div class="mod-title">terraform/observability.tf</div>
+      <div class="mod-desc">Monitoring and cost management</div>
+      <ul>
+        <li>CloudWatch dashboard (Lambda + Athena + KMS)</li>
+        <li>AWS Budgets (80% / 100% monthly alerts)</li>
+        <li>QuickSight dataset (optional, off by default)</li>
+      </ul>
+    </div>
+  </div>
+  <pre style="margin-top:16px;"><code>terraform/
+├── main.tf              # Provider + S3 backend config
+├── variables.tf         # All variable declarations (project_name=adobe, env=stg)
+├── shared.tf            # S3, KMS, IAM, Glue DB, Athena — shared across pipelines
+├── observability.tf     # CloudWatch dashboard, Budgets, QuickSight
+├── outputs.tf           # All root outputs
+├── adobe_pipeline.tf    # ← staged from modules/adobe/terraform/pipeline.tf by CI
+└── modules/
+    └── pipeline/        # Reusable module (Lambda + EventBridge + Glue tables)
+        ├── main.tf
+        ├── variables.tf
+        └── outputs.tf
+
+modules/
+└── adobe/               # Self-contained module: code + tests + Terraform config
+    ├── src/adobe/       # Python package: handler.py, analyzer.py, dq_checker.py
+    ├── tests/           # 32 unit tests (analyzer + DQ checker)
+    └── terraform/
+        └── pipeline.tf  # Adobe pipeline Terraform config (staged into terraform/ by CI)</code></pre>
 </div>
 
 <!-- ══════════════════════════════════════════════════════════ -->
@@ -220,32 +399,32 @@
       <tr>
         <td><strong>Landing</strong></td>
         <td><code>landing/adobe/</code></td>
-        <td>Raw upload — triggers pipeline</td>
-        <td>60 days → Glacier</td>
+        <td>Raw upload — triggers pipeline via EventBridge</td>
+        <td>60 days → delete</td>
         <td>—</td>
         <td><span class="pill pill-blue">Lambda only</span></td>
       </tr>
       <tr>
         <td><strong>Bronze Raw</strong></td>
         <td><code>bronze/raw/</code></td>
-        <td>Original data — plaintext ip/user_agent</td>
-        <td>1 year → Glacier</td>
+        <td>Original hit-level data — plaintext ip + user_agent (PII)</td>
+        <td>365 days → Glacier</td>
         <td><code>adobe_bronze_raw</code></td>
         <td><span class="pill pill-red">Admin only</span></td>
       </tr>
       <tr>
         <td><strong>Bronze Masked</strong></td>
         <td><code>bronze/masked/</code></td>
-        <td>SHA-256 hashed ip/user_agent</td>
-        <td>1 year → Glacier</td>
+        <td>SHA-256 hashed ip + user_agent — all other fields intact</td>
+        <td>365 days → Glacier</td>
         <td><code>adobe_bronze_masked</code></td>
         <td><span class="pill pill-yellow">Developer + Admin</span></td>
       </tr>
       <tr>
         <td><strong>Gold</strong></td>
         <td><code>gold/</code></td>
-        <td>Aggregated keyword revenue — no PII</td>
-        <td>1 year → Standard IA</td>
+        <td>Aggregated keyword revenue — no PII, insert-overwrite on rerun</td>
+        <td>365 days → Standard IA</td>
         <td><code>adobe_gold</code></td>
         <td><span class="pill pill-green">Everyone</span></td>
       </tr>
@@ -270,15 +449,21 @@
         <th>Resource</th>
         <th>Admin Role</th>
         <th>Developer Role</th>
-        <th>Lambda</th>
+        <th>Lambda Role</th>
       </tr>
     </thead>
     <tbody>
       <tr>
         <td>bronze/raw/ (S3)</td>
         <td><span class="check">✓ Read/Write</span></td>
-        <td><span class="cross">✗ Denied (3 layers)</span></td>
+        <td><span class="cross">✗ Bucket policy Deny</span></td>
         <td>Write only</td>
+      </tr>
+      <tr>
+        <td>landing/ (S3)</td>
+        <td><span class="check">✓ Read/Write</span></td>
+        <td><span class="cross">✗ Bucket policy Deny</span></td>
+        <td>Read only</td>
       </tr>
       <tr>
         <td>bronze/masked/ (S3)</td>
@@ -290,34 +475,35 @@
         <td>gold/ (S3)</td>
         <td><span class="check">✓ Read/Write</span></td>
         <td><span class="check">✓ Read</span></td>
-        <td>Write only</td>
+        <td>Write + List + Delete</td>
       </tr>
       <tr>
-        <td>PII KMS key decrypt</td>
+        <td>PII KMS key (kms:Decrypt)</td>
         <td><span class="check">✓ Yes</span></td>
-        <td><span class="cross">✗ No</span></td>
+        <td><span class="cross">✗ No access</span></td>
         <td><span class="cross">✗ Encrypt only</span></td>
       </tr>
       <tr>
-        <td>adobe_bronze_raw (Glue)</td>
+        <td>adobe_bronze_raw (Glue/Athena)</td>
         <td><span class="check">✓ Full access</span></td>
         <td><span class="cross">✗ Denied</span></td>
         <td>—</td>
       </tr>
       <tr>
-        <td>adobe_bronze_masked (Glue)</td>
+        <td>adobe_bronze_masked (Glue/Athena)</td>
         <td><span class="check">✓ Full access</span></td>
         <td><span class="check">✓ Read</span></td>
         <td>—</td>
       </tr>
       <tr>
-        <td>adobe_gold (Glue)</td>
+        <td>adobe_gold (Glue/Athena)</td>
         <td><span class="check">✓ Full access</span></td>
         <td><span class="check">✓ Read</span></td>
         <td>—</td>
       </tr>
     </tbody>
   </table>
+  <p style="font-size:0.75rem;color:#4b5563;margin-top:4px;">Developer access to bronze/raw is blocked at two independent layers: IAM Deny + S3 bucket policy Deny (cannot be overridden by any Allow except root).</p>
 </div>
 
 <!-- ══════════════════════════════════════════════════════════ -->
@@ -325,54 +511,73 @@
 <div class="section">
   <p style="font-size:0.8rem;color:#64748b;margin-bottom:12px;">
     Run in <a href="https://us-east-1.console.aws.amazon.com/athena/home?region=us-east-1#/query-editor" target="_blank" style="color:#6366f1;">Athena Query Editor</a> →
-    Workgroup: <code>search-keyword-analyzer-dev</code> · Database: <code>search_keyword_analyzer_dev</code>
+    Workgroup: <code>adobe-stg</code> · Database: <code>stg_adobe</code>
   </p>
-  <pre><code>-- Top keywords by revenue
+  <pre><code>-- Top keywords by revenue (gold — no PII, anyone can query)
 SELECT search_engine_domain, search_keyword, revenue
-FROM search_keyword_analyzer_dev.adobe_gold
+FROM stg_adobe.adobe_gold
 ORDER BY revenue DESC;
 
 -- Hit counts by page (masked bronze — developer accessible)
 SELECT pagename, COUNT(*) AS hits
-FROM search_keyword_analyzer_dev.adobe_bronze_masked
+FROM stg_adobe.adobe_bronze_masked
 GROUP BY pagename ORDER BY hits DESC;
 
--- Purchase events with pseudonymized IP
+-- Purchase events with pseudonymized IP (masked bronze)
 SELECT date_time, ip, geo_city, product_list
-FROM search_keyword_analyzer_dev.adobe_bronze_masked
+FROM stg_adobe.adobe_bronze_masked
+WHERE event_list LIKE '%1%';
+
+-- Raw PII data — requires admin role + kms:Decrypt on alias/adobe-pii-stg
+SELECT date_time, ip, geo_city, product_list
+FROM stg_adobe.adobe_bronze_raw
 WHERE event_list LIKE '%1%';</code></pre>
 </div>
 
 <!-- ══════════════════════════════════════════════════════════ -->
 <h2>➕ Adding a New Data Source</h2>
 <div class="section">
-  <pre><code># Step 1: Create src/salesforce_handler.py (copy adobe_handler.py, update transformation)
+  <p class="note">The modular layout means adding a new source requires no changes to shared infra or the pipeline module — only new files in a new module directory.</p>
+  <pre><code># Step 1: Create the new module directory
+cp -r modules/adobe modules/salesforce
 
-# Step 2: Add to terraform/main.tf:
+# Step 2: Rename the Python package and update handler logic
+mv modules/salesforce/src/adobe modules/salesforce/src/salesforce
+# Edit modules/salesforce/src/salesforce/handler.py — update transformation logic
+
+# Step 3: Update modules/salesforce/terraform/pipeline.tf
 module "salesforce_pipeline" {
-  source         = "./modules/pipeline"
+  source = "./modules/pipeline"
+
   source_name    = "salesforce"
-  lambda_handler = "salesforce_handler.lambda_handler"
+  lambda_handler = "salesforce.handler.lambda_handler"
   bronze_columns = [
-    { name = "contact_id", type = "string", comment = "" },
-    { name = "revenue",    type = "double",  comment = "" },
+    { name = "contact_id", type = "string",  comment = "" },
+    { name = "revenue",    type = "double",   comment = "" },
   ]
   gold_columns = [
     { name = "campaign", type = "string", comment = "" },
-    { name = "revenue",  type = "double",  comment = "" },
+    { name = "revenue",  type = "double", comment = "" },
   ]
-  # All infra vars identical to adobe_pipeline block
+  # All shared infra wired automatically — copy remaining vars from adobe block
   project_name          = var.project_name
+  environment           = var.environment
   ...
 }
 
-# Step 3: Push PR → CI runs terraform apply
-# Result: new Lambda + Glue tables + EventBridge rule — no manual steps</code></pre>
+# Step 4: Push a PR
+# CI automatically:
+#   - Runs module tests (modules/salesforce/tests/)
+#   - Packages salesforce code into the shared lambda.zip
+#   - Stages modules/salesforce/terraform/pipeline.tf → terraform/salesforce_pipeline.tf
+#   - Runs terraform plan → posts diff to PR
+#   - On merge: terraform apply → new Lambda + Glue tables + EventBridge rule live</code></pre>
 </div>
 
 <footer>
   Search Keyword Performance Analyzer · Adobe Data Engineering Assessment ·
-  <a href="https://github.com/SarathArrepu/Adobe-project" target="_blank" style="color:#6366f1;">GitHub</a>
+  <a href="https://github.com/SarathArrepu/Adobe-project" target="_blank" style="color:#6366f1;">GitHub</a> ·
+  <a href="https://github.com/SarathArrepu/Adobe-project/actions" target="_blank" style="color:#a855f7;">CI/CD</a>
 </footer>
 
 </body>
