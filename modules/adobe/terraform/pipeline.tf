@@ -44,18 +44,18 @@ module "adobe_pipeline" {
   # exceeding any varchar limit that would fit a raw IP).
   # ip and user_agent are PII: masked table hashes them, raw table keeps plaintext.
   bronze_columns = [
-    { name = "hit_time_gmt", type = "int",       comment = "Unix timestamp (Int 11)" },
-    { name = "date_time",    type = "timestamp",  comment = "Hit datetime in report suite timezone" },
-    { name = "user_agent",   type = "string",     comment = "PII — sha256 hash in masked layer, plaintext in raw" },
-    { name = "ip",           type = "string",     comment = "PII — sha256 hash in masked layer, plaintext in raw" },
-    { name = "event_list",   type = "string",     comment = "Comma-separated Adobe Analytics event IDs; '1' = purchase" },
-    { name = "geo_city",     type = "string",     comment = "" },
-    { name = "geo_region",   type = "string",     comment = "" },
-    { name = "geo_country",  type = "string",     comment = "" },
-    { name = "pagename",     type = "string",     comment = "" },
-    { name = "page_url",     type = "string",     comment = "" },
-    { name = "product_list", type = "string",     comment = "Format: Category;Name;Qty;Revenue;CustomEvent;MerchEVar" },
-    { name = "referrer",     type = "string",     comment = "" },
+    { name = "hit_time_gmt", type = "int", comment = "Unix timestamp (Int 11)" },
+    { name = "date_time", type = "timestamp", comment = "Hit datetime in report suite timezone" },
+    { name = "user_agent", type = "string", comment = "PII — sha256 hash in masked layer, plaintext in raw" },
+    { name = "ip", type = "string", comment = "PII — sha256 hash in masked layer, plaintext in raw" },
+    { name = "event_list", type = "string", comment = "Comma-separated Adobe Analytics event IDs; '1' = purchase" },
+    { name = "geo_city", type = "string", comment = "" },
+    { name = "geo_region", type = "string", comment = "" },
+    { name = "geo_country", type = "string", comment = "" },
+    { name = "pagename", type = "string", comment = "" },
+    { name = "page_url", type = "string", comment = "" },
+    { name = "product_list", type = "string", comment = "Format: Category;Name;Qty;Revenue;CustomEvent;MerchEVar" },
+    { name = "referrer", type = "string", comment = "" },
   ]
 
   # Gold columns — aggregated output, no PII
