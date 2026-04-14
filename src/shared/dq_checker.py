@@ -46,6 +46,13 @@ REQUIRED_COLUMNS = {
     "product_list",   # semicolon-delimited product attributes including revenue
     "referrer",       # previous page URL; parsed to detect search engine source
 }
+# Example check on data.sql:
+#   file header = {"hit_time_gmt","date_time","user_agent","ip","event_list","geo_city",...,"referrer"}
+#   REQUIRED_COLUMNS - file header = {} (empty set) → no ERROR, all required columns present
+# Failure example:
+#   file header = {"date_time","user_agent","geo_city",...}  (missing "ip","event_list",etc.)
+#   REQUIRED_COLUMNS - file header = {"ip","event_list","product_list","referrer","hit_time_gmt"}
+#   → ERROR: MISSING_REQUIRED_COLUMNS → pipeline aborts immediately
 
 # Full schema from Appendix A — includes optional enrichment columns.
 # Missing optional columns produce a WARN (not ERROR) so the pipeline continues.
@@ -54,21 +61,30 @@ APPENDIX_A_COLUMNS = {
     "geo_city", "geo_country", "geo_region", "pagename",
     "page_url", "product_list", "referrer", "event_list",
 }
+# data.sql has all 12 Appendix A columns → no WARN for missing optional columns
 
 # Event IDs documented in Appendix A as valid for this dataset.
 # Any other ID is flagged at INFO level (not an error — may be valid custom events).
 VALID_EVENT_IDS = {"1", "2", "10", "11", "12", "13", "14"}
+# data.sql event IDs used: "1" (purchase), "2" (product view), "11" (checkout), "12" (cart add)
+# All are in VALID_EVENT_IDS → no UNKNOWN_EVENT_ID issues in this dataset
 
 # Rough valid Unix timestamp range covering years 2000–2100.
-# Timestamps outside this window are almost certainly corrupt or test data.
-_TS_MIN = 946_684_800   # 2000-01-01 00:00:00 UTC
+_TS_MIN = 946_684_800    # 2000-01-01 00:00:00 UTC
 _TS_MAX = 4_102_444_800  # 2100-01-01 00:00:00 UTC
+# data.sql timestamps: 1254033280 to 1254035260 (all in Sept 2009 — well within range)
+# Example failure: hit_time_gmt = "0" → below _TS_MIN → INVALID_HIT_TIME WARN
 
 # Compiled regex for IPv4 address validation — matches exactly four octets.
 # Groups capture each octet so we can verify the 0–255 range separately.
 _IPV4_RE = re.compile(
     r"^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$"
 )
+# Example matches:
+#   "67.98.123.1"  → match: groups=("67","98","123","1")  → all 0-255 → valid
+#   "23.8.61.21"   → match: groups=("23","8","61","21")   → all 0-255 → valid
+#   "256.0.0.1"    → match: groups=("256","0","0","1")    → 256 > 255 → INVALID_IP_FORMAT WARN
+#   "not-an-ip"    → no match → INVALID_IP_FORMAT WARN
 
 
 # ---------------------------------------------------------------------------
@@ -248,51 +264,83 @@ class DataQualityChecker:
         Returns:
             ``DQReport`` with ``total_rows`` set and all ``issues`` populated.
         """
-        report = DQReport(input_file=self.input_file)  # accumulates all findings
+        report = DQReport(input_file=self.input_file)  # empty report, populated below
         seen_hits: Set[Tuple[str, str]] = set()         # tracks (hit_time, ip) for duplicate detection
 
         with open(self.input_file, "r", encoding="utf-8") as f:
-            reader = csv.DictReader(f, delimiter="\t")      # TSV — tab-delimited
-            columns = set(reader.fieldnames or [])           # extract header column names as a set
+            reader = csv.DictReader(f, delimiter="\t")
+            columns = set(reader.fieldnames or [])
+            # data.sql: columns = {"hit_time_gmt","date_time","user_agent","ip","event_list",
+            #                       "geo_city","geo_region","geo_country","pagename","page_url",
+            #                       "product_list","referrer"}
 
             # ── File-level checks ─────────────────────────────────────────
-            self._check_columns(columns, report)  # verify required + optional columns
+            self._check_columns(columns, report)
+            # data.sql: all required + optional columns present → no issues added
             if report.errors:
-                # Required columns are missing — row-level checks cannot run meaningfully
-                # because DictReader would return None for every expected field.
-                return report  # abort early; caller will see MISSING_REQUIRED_COLUMNS error
+                # Required columns missing → row-level checks would produce garbage (all None)
+                # Example: file without "ip" column → DictReader returns None for every ip lookup
+                return report  # bail out immediately with just the column error
 
-            row_num = 0  # 1-based counter; used as the `row` field in DQIssue
+            row_num = 0  # 1-based counter matches what a human would call "row 1"
             for row in reader:
-                row_num += 1  # increment before checks so issue.row matches the actual data line
+                row_num += 1  # row_num=1 is data row 1 (line 2 of the file after header)
 
-                # Extract the four columns used by row-level checks.
-                ip           = (row.get("ip") or "").strip()            # visitor IP address
-                hit_time     = (row.get("hit_time_gmt") or "").strip()  # Unix epoch string
-                event_list   = (row.get("event_list") or "").strip()    # comma-separated event IDs
-                product_list = (row.get("product_list") or "").strip()  # semicolon-delimited products
+                ip           = (row.get("ip") or "").strip()
+                # row 1 (data): "67.98.123.1"   row 2: "23.8.61.21"   row 4: "44.12.96.2"
+                hit_time     = (row.get("hit_time_gmt") or "").strip()
+                # row 1: "1254033280"  row 2: "1254033379"  ... row 21: "1254035260"
+                event_list   = (row.get("event_list") or "").strip()
+                # row 1: ""  row 2: "2"  row 6: "12"  row 15: "1"  row 18: "1"  row 21: "1"
+                product_list = (row.get("product_list") or "").strip()
+                # row 1: ""   row 15: "Electronics;Zune - 32GB;1;250;"
+                # row 18: "Electronics;Ipod - Nano - 8GB;1;190;"
 
-                # Run every row-level check in sequence.
+                # Each check is independent — all run even if one finds an issue.
                 self._check_missing_ip(ip, row_num, report)
+                # data.sql: all 21 rows have IP → no MISSING_IP issues
+
                 self._check_hit_time(hit_time, row_num, report)
+                # data.sql: all timestamps are ~1254033280 (Sept 2009) → within range → no issues
+
                 self._check_ip_format(ip, row_num, report)
+                # data.sql: "67.98.123.1", "23.8.61.21", "44.12.96.2", "112.33.98.231"
+                # All valid IPv4 dotted quads → no INVALID_IP_FORMAT issues
+
                 self._check_duplicate_hit(hit_time, ip, seen_hits, row_num, report)
+                # data.sql: all (hit_time, ip) pairs are unique → no DUPLICATE_HIT issues
+                # Example failure: two rows with hit_time="1254033280" and ip="67.98.123.1"
+                #   → second row flagged as DUPLICATE_HIT WARN
+
                 self._check_event_ids(event_list, row_num, report)
+                # data.sql: event IDs used: "", "2", "11", "12", "1" — all in VALID_EVENT_IDS
+                # → no UNKNOWN_EVENT_ID issues
+
                 self._check_purchase_no_product(event_list, product_list, row_num, report)
+                # data.sql: rows 15/18/21 have event_list="1" AND non-empty product_list → OK
+                # Example failure: event_list="1" with product_list="" → PURCHASE_NO_PRODUCT WARN
+
                 self._check_product_revenue_no_purchase(event_list, product_list, row_num, report)
-                self._check_product_list(product_list, row_num, report)  # malformed + negative revenue
+                # data.sql: rows 2,7,8,14 have product_list with no revenue (";;" empty field) → OK
+                # row 2: "Electronics;Zune - 328GB;1;;" — revenue field empty → 0.0 → no WARN
 
-            report.total_rows = row_num  # set after loop so value is correct even on empty files
+                self._check_product_list(product_list, row_num, report)
+                # data.sql: all product_list entries have ≥4 semicolon fields, revenue is numeric
+                # → no MALFORMED_PRODUCT_LIST or NEGATIVE_REVENUE issues
 
-        if row_num == 0:  # header was present but no data rows followed
+            report.total_rows = row_num  # 21 after full file scan
+
+        if row_num == 0:  # file had header but zero data rows
             report.issues.append(DQIssue(
                 severity="ERROR",
                 check="EMPTY_FILE",
-                row=None,  # file-level issue — no row number
+                row=None,
                 detail="File contains a header but no data rows."
             ))
+            # Example: file with only the header line → row_num=0 → EMPTY_FILE ERROR
 
-        return report  # caller uses report.passed() to decide whether to proceed
+        return report
+        # data.sql result: DQReport(total_rows=21, issues=[]) → passed()=True
 
     # ------------------------------------------------------------------
     # File-level checks
@@ -309,23 +357,30 @@ class DataQualityChecker:
             columns: Set of column names from the file's header row.
             report:  DQReport to append issues to.
         """
-        missing_required = REQUIRED_COLUMNS - columns  # set difference → absent required columns
-        if missing_required:  # any absent required column is a pipeline-blocking ERROR
+        missing_required = REQUIRED_COLUMNS - columns
+        # data.sql: REQUIRED_COLUMNS - all_12_columns = {} → no required columns missing
+        # Failure example: columns={"date_time","user_agent","geo_city"} (no ip, referrer, etc.)
+        #   missing_required = {"ip","event_list","product_list","referrer","hit_time_gmt"}
+        if missing_required:
             report.issues.append(DQIssue(
                 severity="ERROR",
                 check="MISSING_REQUIRED_COLUMNS",
-                row=None,  # file-level issue
+                row=None,
                 detail=f"Required columns absent: {sorted(missing_required)}. "
                        f"Pipeline cannot run without them."
             ))
+            # Example issue string: "[ERROR] MISSING_REQUIRED_COLUMNS (file): Required columns absent: ['ip', 'referrer']"
 
-        # Check optional columns separately — absence is a WARN, not an ERROR.
-        missing_optional = APPENDIX_A_COLUMNS - REQUIRED_COLUMNS - columns  # optional only
+        # Check optional columns — WARN only, pipeline can continue without them.
+        missing_optional = APPENDIX_A_COLUMNS - REQUIRED_COLUMNS - columns
+        # APPENDIX_A_COLUMNS - REQUIRED_COLUMNS = {"date_time","user_agent","geo_city","geo_country","geo_region","pagename","page_url"}
+        # data.sql has all of them → missing_optional = {} → no WARN
+        # Example: file without "geo_city"/"pagename" columns → WARN but pipeline continues
         if missing_optional:
             report.issues.append(DQIssue(
                 severity="WARN",
                 check="MISSING_APPENDIX_A_COLUMNS",
-                row=None,  # file-level issue
+                row=None,
                 detail=f"Optional Appendix A columns absent: {sorted(missing_optional)}. "
                        f"Pipeline will proceed but enrichment fields will be missing."
             ))
@@ -376,11 +431,15 @@ class DataQualityChecker:
                 row=row,
                 detail="hit_time_gmt is empty."
             ))
-            return  # no further checks make sense for an empty value
+            return  # no further timestamp checks make sense without a value
 
         try:
-            ts = int(hit_time)  # Unix timestamps must be whole integers
-            if not (_TS_MIN <= ts <= _TS_MAX):  # outside the 2000–2100 window
+            ts = int(hit_time)
+            # data.sql examples: int("1254033280")=1254033280, int("1254035260")=1254035260
+            # Failure: int("2009-09-27") → ValueError → INVALID_HIT_TIME WARN
+            if not (_TS_MIN <= ts <= _TS_MAX):
+                # data.sql all pass: 1254033280 is within [946684800, 4102444800]
+                # Failure example: hit_time_gmt="0" → 0 < 946684800 → INVALID_HIT_TIME WARN
                 report.issues.append(DQIssue(
                     severity="WARN",
                     check="INVALID_HIT_TIME",
@@ -388,7 +447,8 @@ class DataQualityChecker:
                     detail=f"hit_time_gmt={ts} is outside the expected range "
                            f"[{_TS_MIN}, {_TS_MAX}] — possible corrupt timestamp."
                 ))
-        except ValueError:  # non-integer string (e.g. "not_a_number" or a date string)
+        except ValueError:
+            # Example: hit_time_gmt="not_a_number" or "2009-09-27 06:34:40" (date string not int)
             report.issues.append(DQIssue(
                 severity="WARN",
                 check="INVALID_HIT_TIME",
@@ -409,11 +469,19 @@ class DataQualityChecker:
             row:    1-based row number.
             report: DQReport to append the issue to.
         """
-        if not ip:  # already flagged by MISSING_IP — avoid duplicate issues
+        if not ip:  # already flagged by MISSING_IP — avoid duplicate issues on same row
             return
 
-        m = _IPV4_RE.match(ip)  # test dotted-quad pattern
-        # Both the regex match AND the octet range must be satisfied.
+        m = _IPV4_RE.match(ip)
+        # data.sql IPs all pass:
+        #   "67.98.123.1"    → match groups=("67","98","123","1")   all ≤255 → valid
+        #   "23.8.61.21"     → match groups=("23","8","61","21")    all ≤255 → valid
+        #   "44.12.96.2"     → match groups=("44","12","96","2")    all ≤255 → valid
+        #   "112.33.98.231"  → match groups=("112","33","98","231") all ≤255 → valid
+        # Failure examples:
+        #   "256.0.0.1"  → regex matches but 256 > 255 → INVALID_IP_FORMAT WARN
+        #   "1.2.3"      → regex no match (only 3 octets) → INVALID_IP_FORMAT WARN
+        #   "abc.def.ghi.jkl" → regex no match (non-numeric) → INVALID_IP_FORMAT WARN
         if not m or not all(0 <= int(o) <= 255 for o in m.groups()):
             report.issues.append(DQIssue(
                 severity="WARN",
@@ -448,8 +516,16 @@ class DataQualityChecker:
         if not hit_time or not ip:  # cannot form a meaningful key without both fields
             return
 
-        key = (hit_time, ip)  # composite key uniquely identifies a single hit
-        if key in seen:        # this exact (time, visitor) pair was already processed
+        key = (hit_time, ip)
+        # data.sql examples:
+        #   row 1: key=("1254033280", "67.98.123.1")  → not in seen → added
+        #   row 2: key=("1254033379", "23.8.61.21")   → not in seen → added
+        #   ...all 21 rows have unique (time, ip) pairs → no duplicates in this dataset
+        #
+        # Failure example: replayed event — two rows with hit_time="1254033280", ip="67.98.123.1"
+        #   First occurrence  → not in seen → added to seen, no issue
+        #   Second occurrence → key in seen → DUPLICATE_HIT WARN on the second row
+        if key in seen:
             report.issues.append(DQIssue(
                 severity="WARN",
                 check="DUPLICATE_HIT",
@@ -457,7 +533,7 @@ class DataQualityChecker:
                 detail=f"Duplicate (hit_time_gmt={hit_time}, ip={ip}) — "
                        f"this hit may be replayed or double-counted."
             ))
-        seen.add(key)  # always record the key, whether first or duplicate occurrence
+        seen.add(key)  # always add — so third+ duplicates are also caught
 
     def _check_event_ids(self, event_list: str, row: int, report: DQReport) -> None:
         """
